@@ -57,7 +57,7 @@ class SpaceVisualizer:
         """
         self.space = space
 
-    def plot_3d_two_varied(self, dim1=0, dim2=1, fixed_values=None, show_samples=True, show_critplane=True, criticality_thresholds: List[float] = None, save_path=None, format='html', top_down=True):
+    def plot_3d_two_varied(self, dim1=0, dim2=1, fixed_values=None, show_samples=True, show_critplane=True, criticality_thresholds: List[float] = None, save_path=None, format='html', top_down=True, simulate_bias=False):
         """
         Interactive 3-D surface plot of the continuous criticality surface.
         Two dimensions are varied freely; all others are fixed.
@@ -104,6 +104,30 @@ class SpaceVisualizer:
         Z = self.space.values[tuple(indices)]
         X = self.space.meshgrid[dim1][tuple(indices)]
         Y = self.space.meshgrid[dim2][tuple(indices)]
+        
+        # ==========================================
+        # NEU: BIAS AUF DIE OBERFLÄCHE (Z) ANWENDEN
+        # ==========================================
+        if simulate_bias and getattr(self.space, "bias_type", None) is not None:
+            for i in range(X.shape[0]):
+                for j in range(X.shape[1]):
+                    # Konstruiere den Punkt virtuell, um die Region zu checken
+                    pt = [0] * len(self.space.dimensions)
+                    pt[dim1] = X[i, j]
+                    pt[dim2] = Y[i, j]
+                    for d in range(len(pt)):
+                        if d != dim1 and d != dim2:
+                            pt[d] = fixed_values[d] if d < len(fixed_values) else 0
+                    
+                    val = Z[i, j]
+                    if self.space.bias_type == "global":
+                        offset = self.space.bias_params.get("offset", 0.2)
+                        val = max(0.0, min(1.0, val + offset))
+                    elif self.space.bias_type == "region":
+                        if pt[0] > 5.0:
+                            val *= 0.5
+                    Z[i, j] = val
+        # ==========================================
 
         fig = go.Figure()
 
@@ -139,6 +163,21 @@ class SpaceVisualizer:
             sample_points_x = np.array([p[dim1] for p in adjusted_points])
             sample_points_y = np.array([p[dim2] for p in adjusted_points])
             sample_values = self.space.get_values_for_points(adjusted_points, save_points=False)
+
+            # ==========================================
+            # NEU: BIAS AUF DIE SAMPLE PUNKTE ANWENDEN
+            # ==========================================
+            if simulate_bias and getattr(self.space, "bias_type", None) is not None:
+                for i, pt in enumerate(adjusted_points):
+                    val = sample_values[i]
+                    if self.space.bias_type == "global":
+                        offset = self.space.bias_params.get("offset", 0.2)
+                        val = max(0.0, min(1.0, val + offset))
+                    elif self.space.bias_type == "region":
+                        if pt[0] > 5.0:
+                            val *= 0.5
+                    sample_values[i] = val
+            # ==========================================
 
             fig.add_trace(go.Scatter3d(
                 x=sample_points_x, y=sample_points_y, z=sample_values,

@@ -310,8 +310,9 @@ def main():
                             # Write immediately
                             df_current = pd.DataFrame([result])
                             append_to_excel(output_file, df_current, sheet_name="raw_results")
-                            
-                        space.visualizer.plot_3d_two_varied()
+
+                        space.visualizer.plot_3d_two_varied(simulate_bias=False)
+                        space.visualizer.plot_3d_two_varied(simulate_bias=True)
                 break # Only run 1 Space
 
     # Post-process results
