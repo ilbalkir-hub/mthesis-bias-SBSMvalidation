@@ -39,15 +39,15 @@ def main():
     # --- Search space configuration ---
     n_dim = 2                          # number of scenario input dimensions
     dimensions = [(0, 10)] * n_dim     # (min, max) bounds for each dimension
-    n_points = 200                     # grid resolution for space evaluation
+    n_points = 200                  # grid resolution for space evaluation
 
     base_path = Path(__file__).parent
 
     # --- Load criticality function(s) from JSON ---
     # JSON schema: see Spaces/examples/example2dwnoise.json
     # Switch to a different file to test other scenario functions.
-    space_file_path = base_path / "Spaces" / "generated_spaces" / "2D" / "6_2D.json"
-    # space_file_path = base_path / 'Spaces' / 'test_cases' / '2D' / 'with_noise' / 'test_5_mirrored.json'
+    # space_file_path = base_path / "Spaces" / "generated_spaces" / "2D" / "6_2D.json"
+    space_file_path = base_path / 'Spaces' / 'test_cases' / '2D' / 'with_noise' / 'test_3.json'
     function_instances = load_functions_from_json(space_file_path)
 
     # --- Load input distribution specification (optional) ---
@@ -74,10 +74,24 @@ def main():
     samples = ss.latin_hypercube_sampling(dimensions, n_samples=50)
 
     # --- Evaluate and analyse ---
-    space.get_values_for_points(samples)
+    # # space.get_values_for_points(samples)
     # Optionally query density at a specific point:
     # joint_prob, axis_probs = space.get_density_for_point((5.0, 5.0, 5.0))
-    space.metrics.run_metrics_suite(method_categories=["general"])
+    # # space.metrics.run_metrics_suite(method_categories=["general"])
+
+    # --- Evaluate and analyse ---
+    space.get_values_for_points(samples)
+    
+    # 1. Speichere das Ergebnis der Metriken in einer Variablen
+    results = space.metrics.run_metrics_suite(method_categories=["general"])
+
+    # 2. Gib die Ergebnisse explizit im Terminal aus
+    print("\n" + "="*30)
+    print("   BENCHMARK ERGEBNISSE")
+    print("="*30)
+    for metric_name, value in results.items():
+        print(f"{metric_name:25}: {value}")
+    print("="*30 + "\n")
 
     # --- Visualise ---
     # fixed_values: fix all but two dimensions for the 3-D surface plot;

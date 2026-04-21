@@ -292,7 +292,10 @@ def main():
             for config_file in config_files:
                 functions = load_functions_from_json(config_file)
                 space = Space(dimensions=[(0, 10)] * n_dim, functions=functions, n_points=n_points, criticality_thresholds=None)
-                space.visualizer.plot_3d_two_varied()
+                # ==========================================
+                # BIAS TEST
+                space.activate_bias("region", offset=0.3)
+                # ==========================================
                 for method, eval_metrics in method_to_evaluations.items():
                     for run in range(1, n_runs + 1):
                         logging.info(f" Running {dimension_str} {config_file} - {method} - run: {run}")
@@ -307,6 +310,8 @@ def main():
                             # Write immediately
                             df_current = pd.DataFrame([result])
                             append_to_excel(output_file, df_current, sheet_name="raw_results")
+                            
+                        space.visualizer.plot_3d_two_varied()
                 break # Only run 1 Space
 
     # Post-process results

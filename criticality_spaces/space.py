@@ -185,6 +185,20 @@ class Space:
         }
         return point_value_dict
 
+    def activate_bias(self, bias_type: str, **kwargs):
+        """
+        Aktiviert einen künstlichen Bias im Raum für das Sim-to-Reality Experiment.
+        Verfügbare Typen: 'global', 'region'
+        """
+        self.bias_type = bias_type
+        self.bias_params = kwargs
+        print(f"\n⚠️ ACHTUNG: Bias '{bias_type}' wurde aktiviert! Parameter: {kwargs}")
+
+    def deactivate_bias(self):
+        """Schaltet den Bias wieder aus."""
+        self.bias_type = None
+        self.bias_params = {}
+
     def get_values_for_points(self, points: Union[np.ndarray, list], save_points=True):
         """
         Evaluate the criticality surface at arbitrary points, using the cache where possible.
@@ -242,6 +256,31 @@ class Space:
                     values[idx] = value
                     self.point_value_dict[rounded_points[idx]] = value
 
+        # ==========================================
+        # NEU: BIAS INJEKTION FÜR DAS EXPERIMENT
+        # ==========================================
+        # Wir belügen den Algorithmus nur, wenn "save_points=True" ist. 
+        # Das bedeutet, der Selektor fragt gerade aktiv Punkte an.
+        if save_points and getattr(self, "bias_type", None) is not None:
+            biased_values = np.copy(values) # Kopie erstellen
+            
+            for i, point in enumerate(points):
+                if self.bias_type == "global":
+                    # Alles künstlich anheben oder absenken
+                    offset = self.bias_params.get("offset", 0.2)
+                    # max() und min() verhindern, dass wir über 1.0 (100% Kritikalität) hinausschießen
+                    biased_values[i] = max(0.0, min(1.0, biased_values[i] + offset))
+                
+                elif self.bias_type == "region":
+                    # Beispiel: In der rechten Hälfte der Karte ist die Simulation ungenau
+                    if point[0] > 5.0:
+                        biased_values[i] *= 0.5 # Gefahr wird halbiert
+                        
+            # Gib dem Selektor die verfälschten Werte zurück
+            return biased_values
+        # ==========================================
+
+        # Wenn kein Bias aktiv ist oder Metriken berechnet werden, sag die Wahrheit
         return values
 
     def get_discrete_values_for_points(
