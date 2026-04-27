@@ -185,19 +185,13 @@ class Space:
         }
         return point_value_dict
 
-    def activate_bias(self, bias_type: str, **kwargs):
-        """
-        Aktiviert einen künstlichen Bias im Raum für das Sim-to-Reality Experiment.
-        Verfügbare Typen: 'global', 'region'
-        """
-        self.bias_type = bias_type
-        self.bias_params = kwargs
-        print(f"\n⚠️ ACHTUNG: Bias '{bias_type}' wurde aktiviert! Parameter: {kwargs}")
+    def activate_bias(self, bias_object):
+        """Aktiviert einen Bias durch ein übergebenes Bias-Objekt."""
+        self.bias = bias_object
+        print(f"\n ACHTUNG: Bias '{self.bias.name}' wurde aktiviert!")
 
     def deactivate_bias(self):
-        """Schaltet den Bias wieder aus."""
-        self.bias_type = None
-        self.bias_params = {}
+        self.bias = None
 
     def get_values_for_points(self, points: Union[np.ndarray, list], save_points=True):
         """
@@ -261,22 +255,15 @@ class Space:
         # ==========================================
         # Wir belügen den Algorithmus nur, wenn "save_points=True" ist. 
         # Das bedeutet, der Selektor fragt gerade aktiv Punkte an.
-        if save_points and getattr(self, "bias_type", None) is not None:
-            biased_values = np.copy(values) # Kopie erstellen
-            
+        # Nun in OOP-Version
+
+        force_illusion = getattr(self, "force_evaluation_bias", False)
+        
+        if save_points and getattr(self, "bias", None) is not None:
+            biased_values = np.copy(values)
             for i, point in enumerate(points):
-                if self.bias_type == "global":
-                    # Alles künstlich anheben oder absenken
-                    offset = self.bias_params.get("offset", 0.2)
-                    # max() und min() verhindern, dass wir über 1.0 (100% Kritikalität) hinausschießen
-                    biased_values[i] = max(0.0, min(1.0, biased_values[i] + offset))
-                
-                elif self.bias_type == "region":
-                    # Beispiel: In der rechten Hälfte der Karte ist die Simulation ungenau
-                    if point[0] > 5.0:
-                        biased_values[i] *= 0.5 # Gefahr wird halbiert
-                        
-            # Gib dem Selektor die verfälschten Werte zurück
+                # Egal welcher Bias aktiv ist, wir rufen einfach .apply() auf!
+                biased_values[i] = self.bias.apply(biased_values[i], point)
             return biased_values
         # ==========================================
 

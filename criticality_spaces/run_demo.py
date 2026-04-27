@@ -39,7 +39,7 @@ def main():
     # --- Search space configuration ---
     n_dim = 2                          # number of scenario input dimensions
     dimensions = [(0, 10)] * n_dim     # (min, max) bounds for each dimension
-    n_points = 200                  # grid resolution for space evaluation
+    n_points = 5                  # grid resolution for space evaluation
 
     base_path = Path(__file__).parent
 

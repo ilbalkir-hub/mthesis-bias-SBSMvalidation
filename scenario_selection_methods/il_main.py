@@ -291,7 +291,7 @@ def main():
     )
 
     method_to_evaluations = {
-        # "random": ["general"],
+        "random": ["general"],
         # "lhs": ["general"],
         # "sobol": ["general", "boundary_detection"],
         # "nndv": ["general", "boundary_detection"],

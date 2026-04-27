@@ -16,12 +16,9 @@ Description:
 """
 
 from selector_random import RandomSelector, SobolSelector, LatinHypercubeSelector
-from selector_idw import IDWSelector
 from selector_gpr import GPSTLSelector
-from selector_ipso import IPSOSearchSelector
 from selector_ann import ANNSelector
-from selector_nndv import NNDVSelector
-from selector_gdnnas import GDNNASSelector
+
 
 
 def get_selector(name: str, space, n_select: int):
@@ -55,17 +52,9 @@ def get_selector(name: str, space, n_select: int):
         return SobolSelector(space, n_select)
     elif name == "lhs":
         return LatinHypercubeSelector(space, n_select)
-    elif name == "idw":
-        return IDWSelector(space, n_select)
     elif name == "gpr":
         return GPSTLSelector(space, n_select)
-    elif name.lower() == "ipso":
-        return IPSOSearchSelector(space, n_select)
     elif name.lower() == "ann":
         return ANNSelector(space, n_select)
-    elif name.lower() == "nndv":
-        return NNDVSelector(space, n_select)
-    elif name.lower() == "gdnnas":
-        return GDNNASSelector(space, n_select)
     else:
         raise ValueError(f"Unknown selection method: {name}")

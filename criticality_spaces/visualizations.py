@@ -108,10 +108,9 @@ class SpaceVisualizer:
         # ==========================================
         # NEU: BIAS AUF DIE OBERFLÄCHE (Z) ANWENDEN
         # ==========================================
-        if simulate_bias and getattr(self.space, "bias_type", None) is not None:
+        if simulate_bias and getattr(self.space, "bias", None) is not None:
             for i in range(X.shape[0]):
                 for j in range(X.shape[1]):
-                    # Konstruiere den Punkt virtuell, um die Region zu checken
                     pt = [0] * len(self.space.dimensions)
                     pt[dim1] = X[i, j]
                     pt[dim2] = Y[i, j]
@@ -119,14 +118,8 @@ class SpaceVisualizer:
                         if d != dim1 and d != dim2:
                             pt[d] = fixed_values[d] if d < len(fixed_values) else 0
                     
-                    val = Z[i, j]
-                    if self.space.bias_type == "global":
-                        offset = self.space.bias_params.get("offset", 0.2)
-                        val = max(0.0, min(1.0, val + offset))
-                    elif self.space.bias_type == "region":
-                        if pt[0] > 5.0:
-                            val *= 0.5
-                    Z[i, j] = val
+                    # Hier ist der saubere Aufruf:
+                    Z[i, j] = self.space.bias.apply(Z[i, j], pt)
         # ==========================================
 
         fig = go.Figure()
@@ -166,17 +159,12 @@ class SpaceVisualizer:
 
             # ==========================================
             # NEU: BIAS AUF DIE SAMPLE PUNKTE ANWENDEN
+            # OOP-Version
             # ==========================================
-            if simulate_bias and getattr(self.space, "bias_type", None) is not None:
+            if simulate_bias and getattr(self.space, "bias", None) is not None:
                 for i, pt in enumerate(adjusted_points):
-                    val = sample_values[i]
-                    if self.space.bias_type == "global":
-                        offset = self.space.bias_params.get("offset", 0.2)
-                        val = max(0.0, min(1.0, val + offset))
-                    elif self.space.bias_type == "region":
-                        if pt[0] > 5.0:
-                            val *= 0.5
-                    sample_values[i] = val
+                    # Hier ist der saubere Aufruf:
+                    sample_values[i] = self.space.bias.apply(sample_values[i], pt)
             # ==========================================
 
             fig.add_trace(go.Scatter3d(
