@@ -194,9 +194,21 @@ class SpaceVisualizer:
         else:
             title = "3D Criticality Surface: 2D Variation"
 
-        fig.update_layout(title=title, autosize=True,
-                        scene=dict(xaxis_title=f'Dimension {dim1+1}', yaxis_title=f'Dimension {dim2+1}', zaxis_title='Criticality'),
-                        legend_title="Legend")
+        fig.update_layout(
+    title=title, 
+    autosize=True,
+    scene=dict(
+        xaxis_title=f'Dimension {dim1+1}', 
+        yaxis_title=f'Dimension {dim2+1}', 
+        zaxis_title='Criticality',
+        zaxis=dict(range=[0, 1], autorange=False)  # <--- Hier ist der Käfig eingebaut
+    ),
+    legend_title="Legend"   
+        )
+
+#        fig.update_layout(title=title, autosize=True,
+#                        scene=dict(xaxis_title=f'Dimension {dim1+1}', yaxis_title=f'Dimension {dim2+1}', zaxis_title='Criticality'),
+#                        legend_title="Legend")
         
         if save_path is not None:
             if format == 'png':
@@ -463,7 +475,8 @@ class SpaceVisualizer:
             scene=dict(
                 xaxis_title=f'Dimension {dim1+1}',
                 yaxis_title=f'Dimension {dim2+1}',
-                zaxis_title="Class label"
+                zaxis_title="Class label",
+                zaxis=dict(range=[0, 1], autorange=False)
             ),
             legend_title="Legend",
             autosize=True

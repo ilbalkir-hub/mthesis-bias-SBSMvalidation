@@ -39,7 +39,7 @@ if cs_path not in sys.path:
 from functionloader import load_functions_from_json
 from space import Space
 from factory import get_selector
-from bias import GlobalBias, RegionBias
+from bias import GlobalBias, RegionBias, LocalStructuralBias, TopologyBoundaryBias, CalibrationBias, RegionDependentBias, LocalizationBias, BiasChain
 
 logging.basicConfig(
     filename="evaluations/evaluation.log",
@@ -328,14 +328,19 @@ def main():
                 functions = load_functions_from_json(config_file)
                 space = Space(dimensions=[(0, 10)] * n_dim, functions=functions, n_points=n_points, criticality_thresholds=None)
 
-                # ==========================================
-                # BIAS per OOP
-                # Erstelle Bias-Objekt 
-                mein_experiment_bias = RegionBias(threshold_x=5.0, multiplier=0.5)
-                # mein_experiment_bias = GlobalBias(offset=0.3) # Alternativ
+                # Bias per OOP
                 
-                # Stecke es in den Raum
+                # 1. Die einzelnen Störfaktoren definieren
+                Bias1 = LocalizationBias(space=space, x_shift=1.5, y_shift=-0.5)
+                Bias2 = TopologyBoundaryBias(boundary_margin=1.5, penalty=0.5)
+                Bias3 = RegionDependentBias(x_range=(4.0, 7.0), y_range=(4.0, 7.0), drop_factor=0.2)
+                Bias4 = LocalStructuralBias(amplitude=0.07, frequency=12.0)
+                Bias5 = CalibrationBias(scale=1.2, offset=0.0)
+                # 2. Die Pipeline zusammenbauen (Reihenfolge beachten, Verschiebung in Inputdimension muss als erste gemacht werden)
+                mein_experiment_bias = BiasChain([Bias1, Bias2, Bias3,Bias4,Bias5])
                 space.activate_bias(mein_experiment_bias)
+
+                # space.deactivate_bias()
                 # ==========================================
 
                 for method, eval_metrics in method_to_evaluations.items():
