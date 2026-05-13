@@ -152,7 +152,7 @@ def main():
     space.activate_bias(ultimate_pipeline)
 
     # 3. SELEKTOR STARTEN
-    method = "atslg"
+    method = "atslgnc"
     n_select = 100
     metrics_to_calc = ["general", "extremum_search"]
     

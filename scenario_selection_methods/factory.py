@@ -59,7 +59,7 @@ def get_selector(name: str, space, n_select: int):
     elif name == "atslg":
         return ATSLGSelector(space, n_select)
     elif name == "atslgnc":
-        return ATSLGSelector(space, n_select)
+        return StandardGPRSelector(space, n_select)
     elif name == "is":
         return ImportanceSamplingSelector(space, n_select)
     else:

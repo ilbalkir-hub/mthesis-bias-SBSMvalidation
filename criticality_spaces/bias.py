@@ -103,7 +103,31 @@ class RegionDependentBias:
             return max(0.0, min(1.0, new_value))
         return value
     
+class FlatRegionBias:
+    """
+    Zieht einen festen Wert (Flat Value) von der Kritikalität ab, 
+    sobald sich das UUV in einer bestimmten Region befindet.
+    """
+    def __init__(self, x_range=(4.0, 9.0), y_range=(4.0, 9.0), offset=0.5):
+        self.x_range = x_range
+        self.y_range = y_range
+        self.offset = offset
+        self.name = "FlatRegionBias"
 
+    def apply(self, val, pt):
+        x, y = pt[0], pt[1]
+        
+        # Prüfen, ob wir in der betroffenen Region sind
+        if (self.x_range[0] <= x <= self.x_range[1]) and \
+           (self.y_range[0] <= y <= self.y_range[1]):
+            
+            # Ziehe den konstanten Wert ab. 
+            # max(0.0, ...) verhindert, dass der Sensor "negative" Gefahr ausgibt.
+            return max(0.0, val - self.offset)
+            
+        # Außerhalb der Region sagt der Sensor die Wahrheit
+        return val
+    
 class AxisGradientBias:
     """Ein Bias, der den Gefahrenwert abschwächt, je weiter man sich auf EINER Achse bewegt."""
     def __init__(self, axis_index: int, start_coord: float, drop_per_unit: float, name="AxisGradientBias"):

@@ -45,7 +45,7 @@ class ATSLGSelector(BaseSelector):
         dim = len(bounds)
         
         # 1. Initialisierung (Gleichung 17 / LHS)
-        sampler = qmc.LatinHypercube(d=dim, seed=42)
+        sampler = qmc.LatinHypercube(d=dim, seed=35)  #Powerpoint seed=42
         X_train = sampler.random(n=self.n_initial)
         X_train = qmc.scale(X_train, [b[0] for b in bounds], [b[1] for b in bounds])
         
@@ -55,6 +55,7 @@ class ATSLGSelector(BaseSelector):
         current_X = X_train
         current_diffs = diffs
         current_labels = labels
+        counter = 0 
 
         for i in range(self.n_iterations):
             X_cand = np.random.uniform([b[0] for b in bounds], [b[1] for b in bounds], (500, dim))
@@ -83,6 +84,11 @@ class ATSLGSelector(BaseSelector):
                 mean2, std2 = self.gpr2.predict(X_cand, return_std=True)
             else:
                 mean2, std2 = np.zeros(len(X_cand)), np.ones(len(X_cand))
+
+            counter += 1
+            if counter == 9:
+                print("x")
+            
 
             # --- ACQUISITION FUNCTION (Gleichungen 28 - 31) ---
             
@@ -115,8 +121,9 @@ class ATSLGSelector(BaseSelector):
             current_X = np.vstack([current_X, next_X])
             current_diffs = np.concatenate([current_diffs, new_diffs])
             current_labels = np.concatenate([current_labels, new_labels])
-
+            
         return [tuple(p) for p in current_X]
+    
     
 class StandardGPRSelector(BaseSelector):
     """
@@ -150,7 +157,7 @@ class StandardGPRSelector(BaseSelector):
         dim = len(bounds)
         
         # 1. Initialisierung (Latin Hypercube)
-        sampler = qmc.LatinHypercube(d=dim, seed=42)
+        sampler = qmc.LatinHypercube(d=dim, seed=12)
         X_train = sampler.random(n=self.n_initial)
         X_train = qmc.scale(X_train, [b[0] for b in bounds], [b[1] for b in bounds])
         
