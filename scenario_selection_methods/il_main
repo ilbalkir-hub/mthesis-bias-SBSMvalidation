@@ -3,6 +3,8 @@ import sys
 import time
 import pandas as pd
 from datetime import datetime
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Pfade setzen
 base_path = Path(__file__).parent
@@ -50,7 +52,84 @@ def evaluate_single_config(space, method_name, n_select, eval_metrics):
         metrics_illusion["max_criticality_selected"] = max(perceived_values)
         metrics_illusion["min_criticality_selected"] = min(perceived_values)
 
-    return metrics_real, metrics_illusion, duration
+    # HIER GEÄNDERT: selector wird zurückgegeben
+    return metrics_real, metrics_illusion, duration, selector
+
+
+# --- NEUE FUNKTION ZUM PLOTTEN DER FEHLERLANDSCHAFT ---
+def plot_atslg_landscape(selector, space, resolution=50):
+    """
+    Erstellt einen 3D-Plot, der den echten Sensorfehler (Bias) 
+    mit dem vom ATSLG-Modell gelernten Fehler vergleicht.
+    """
+    print("\n[Visualisierung] Generiere Fehler-Landschaft (Sim-to-Reality Gap)...")
+    
+    bounds = space.dimensions
+    x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+    y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+    X, Y = np.meshgrid(x, y)
+    grid_points = np.c_[X.ravel(), Y.ravel()]
+    
+    # 1. Echten Fehler berechnen
+    y_true = np.array(space.get_values_for_points(grid_points, save_points=False))
+    y_illus = np.array([space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+    true_diff = y_true - y_illus
+    Z_true = true_diff.reshape(X.shape)
+    
+    # 2. Gelernten Fehler (GPR) berechnen
+    try:
+        p1 = selector.gpc.predict_proba(grid_points)[:, 1]
+    except:
+        p1 = np.zeros(len(grid_points))
+        
+    if hasattr(selector.gpr1, "X_train_"):
+        mean1, _ = selector.gpr1.predict(grid_points, return_std=True)
+    else:
+        mean1 = np.zeros(len(grid_points))
+        
+    if hasattr(selector.gpr2, "X_train_"):
+        mean2, _ = selector.gpr2.predict(grid_points, return_std=True)
+    else:
+        mean2 = np.zeros(len(grid_points))
+        
+    pred_diff = (p1 * mean1) + ((1 - p1) * mean2)
+    Z_pred = pred_diff.reshape(X.shape)
+    
+    # 3. Plotten
+    fig = plt.figure(figsize=(14, 6))
+    fig.suptitle("Performance Dissimilarity: Realität vs. ATSLG-Modell", fontsize=14, fontweight='bold')
+    
+    # Linker Plot: Echter Bias
+    ax1 = fig.add_subplot(121, projection='3d')
+    surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
+    ax1.set_title("Echter Sensor-Fehler $f(x)$")
+    ax1.set_xlabel("Dimension 0")
+    ax1.set_ylabel("Dimension 1")
+    ax1.set_zlabel("Fehler (Ground Truth - Illusion)")
+    fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
+    
+    # Rechter Plot: Gelernter Bias
+    ax2 = fig.add_subplot(122, projection='3d')
+    surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Blues', alpha=0.8, edgecolor='none')
+    
+    # Messpunkte des UUV als schwarze Punkte einzeichnen
+    if len(selector.space.selected_points) > 0:
+        selected_X = np.array(selector.space.selected_points)
+        pt_y_true = np.array(space.get_values_for_points(selected_X, save_points=False))
+        pt_y_illus = np.array([space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+        pt_diff = pt_y_true - pt_y_illus
+        ax2.scatter(selected_X[:, 0], selected_X[:, 1], pt_diff, color='black', s=25, label="UUV Messungen", zorder=5)
+        ax2.legend()
+        
+    ax2.set_title("Vom ATSLG gelernte Korrektur $\\tilde{f}(x)$")
+    ax2.set_xlabel("Dimension 0")
+    ax2.set_ylabel("Dimension 1")
+    ax2.set_zlabel("Geschätzter Fehler")
+    fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
+    
+    plt.tight_layout()
+    plt.show()
+# ---------------------------------------------------------
 
 
 def main():
@@ -59,7 +138,7 @@ def main():
     print("="*50)
 
     # Testraum
-    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "without_noise" / "test_5.json"
+    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "with_noise" / "test_4.json"
     print(f"[1] Lade Raum: {test_file_path.name}")
     
     functions = load_functions_from_json(test_file_path)
@@ -67,25 +146,22 @@ def main():
 
     # 2. BIAS AKTIVIEREN
     print("[2] Biases aktivieren...")
-    #bias1 = LocalizationBias(space=space, x_shift=-2, y_shift=-1)
-    #bias2 = TopologyBoundaryBias(boundary_margin=1.5, penalty=-0.7)
-    #bias3 = RegionDependentBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), drop_factor=0.1)
-    #bias4 = LocalStructuralBias(amplitude=0.02, frequency=10.0)
-    #bias5 = CalibrationBias(scale=0.8, offset=0.0)
-    bias6  = AxisGradientBias(axis_index=0, start_coord=0, drop_per_unit=-0.02)
+    bias3 = RegionDependentBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), drop_factor=0.1)
     
-    ultimate_pipeline = BiasChain([bias6])
+    ultimate_pipeline = BiasChain([bias3])
     space.activate_bias(ultimate_pipeline)
 
     # 3. SELEKTOR STARTEN
-    method = "sobol"
+    method = "atslg"
     n_select = 100
     metrics_to_calc = ["general", "extremum_search"]
     
     space.reset_selected_points()
-    metrics_real, metrics_illu, duration = evaluate_single_config(space, method, n_select, metrics_to_calc)
+    
+    # HIER GEÄNDERT: active_selector fängt den Selector aus der Funktion auf
+    metrics_real, metrics_illu, duration, active_selector = evaluate_single_config(space, method, n_select, metrics_to_calc)
 
-    # 4. EXCEL EXPORT (NEU)
+    # 4. EXCEL EXPORT
     print("\n[4] Speichere Ergebnisse in Excel...")
     base_info = {
         "Testdatei": test_file_path.name,
@@ -112,7 +188,6 @@ def main():
     print(f"📂 Datei: {output_file}")
     print("-" * 50)
     
-    # .get() schützt vor Abstürzen, falls eine Metrik mal fehlen sollte
     print(f"Maximal gefundene Gefahr (Illusion): {metrics_illu.get('max_criticality_selected', 0):.4f}")
     print(f"Maximal gefundene Gefahr (Realität): {metrics_real.get('max_criticality_selected', 0):.4f}")
     print(f"Sim-to-Reality GAP: {metrics_illu.get('max_criticality_selected', 0) - metrics_real.get('max_criticality_selected', 0):+.4f}")
@@ -121,6 +196,10 @@ def main():
     print("\n[6] Öffne 3D-Plots...")
     space.visualizer.plot_3d_two_varied(simulate_bias=False)
     space.visualizer.plot_3d_two_varied(simulate_bias=True)
+    
+    # HIER GEÄNDERT: Aufruf des neuen ATSLG Plots
+    if method == "atslg":
+        plot_atslg_landscape(active_selector, space)
 
 if __name__ == "__main__":
     main()

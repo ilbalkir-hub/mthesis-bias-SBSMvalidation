@@ -1,0 +1,245 @@
+from pathlib import Path
+import sys
+import time
+import pandas as pd
+from datetime import datetime
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Pfade setzen
+base_path = Path(__file__).parent
+cs_path = (base_path.parent / "criticality_spaces").resolve()
+if cs_path not in sys.path:
+    sys.path.insert(0, str(cs_path))
+
+from functionloader import load_functions_from_json
+from space import Space
+from factory import get_selector
+from bias import  RegionDependentBias, CalibrationBias, BiasChain, AxisGradientBias
+
+def evaluate_single_config(space, method_name, n_select, eval_metrics):
+    """Führt einen Selektor aus und vergleicht Illusion mit Realität."""
+    print(f" Starte Selektor: {method_name}")
+    selector = get_selector(method_name, space, n_select)
+
+    # NEU: Der intelligente Metrik-Filter (verhindert Abstürze)
+    safe_metrics = eval_metrics.copy() 
+    if not hasattr(selector, "get_model") and "model_reconstruction" in safe_metrics:
+        safe_metrics.remove("model_reconstruction")
+        print(f"   ⚠️ Warnung: '{method_name}' hat kein Modell. 'model_reconstruction' übersprungen!")
+
+    start_time = time.perf_counter()
+    
+    # Nutzt jetzt "safe_metrics" statt "eval_metrics"
+    if hasattr(selector, "select"):
+        selector.select()
+        metrics_real = space.metrics.run_metrics_suite(method_categories=safe_metrics)
+    elif hasattr(selector, "get_model"):
+        model = selector.get_model()
+        metrics_real = space.metrics.run_metrics_suite(method_categories=safe_metrics, surrogate_model=model)
+    else:
+        raise NotImplementedError("Selektor muss 'select()' oder 'get_model()' haben.")
+    
+    duration = time.perf_counter() - start_time
+
+    # Metriken der Illusion berechnen
+    metrics_illusion = metrics_real.copy()
+    if getattr(space, "bias", None) is not None and len(space.selected_points) > 0:
+        raw_values = space.get_values_for_points(space.selected_points, save_points=False)
+        perceived_values = [space.bias.apply(val, pt) for val, pt in zip(raw_values, space.selected_points)]
+        
+        metrics_illusion["average_criticality_selected"] = sum(perceived_values) / len(perceived_values)
+        metrics_illusion["max_criticality_selected"] = max(perceived_values)
+        metrics_illusion["min_criticality_selected"] = min(perceived_values)
+
+    # HIER GEÄNDERT: selector wird zurückgegeben
+    return metrics_real, metrics_illusion, duration, selector
+
+
+# --- NEUE FUNKTION ZUM PLOTTEN DER FEHLERLANDSCHAFT ---
+def plot_atslg_landscape(selector, space, resolution=50):
+    """
+    Erstellt ein 2x2 3D-Plot-Grid, das den echten Sensorfehler mit dem 
+    kombinierten ATSLG-Modell und den einzelnen GPR-Regressoren vergleicht.
+    """
+    print("\n[Visualisierung] Generiere detaillierte Fehler-Landschaft (4 Panels)...")
+    
+    bounds = space.dimensions
+    x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+    y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+    X, Y = np.meshgrid(x, y)
+    grid_points = np.c_[X.ravel(), Y.ravel()]
+    
+    # --- 1. Echten Fehler berechnen ---
+    y_true = np.array(space.get_values_for_points(grid_points, save_points=False))
+    y_illus = np.array([space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+    true_diff = y_true - y_illus
+    Z_true = true_diff.reshape(X.shape)
+    
+    # --- 2. Gelernten Fehler (GPR) berechnen ---
+    try:
+        p1 = selector.gpc.predict_proba(grid_points)[:, 1]
+    except:
+        p1 = np.zeros(len(grid_points))
+        
+    if hasattr(selector.gpr1, "X_train_"):
+        mean1, _ = selector.gpr1.predict(grid_points, return_std=True)
+    else:
+        mean1 = np.zeros(len(grid_points))
+        
+    if hasattr(selector.gpr2, "X_train_"):
+        mean2, _ = selector.gpr2.predict(grid_points, return_std=True)
+    else:
+        mean2 = np.zeros(len(grid_points))
+        
+    # Kombination (Finales Modell)
+    pred_diff = (p1 * mean1) + ((1 - p1) * mean2)
+    
+    # Matrizen für 3D plot formen
+    Z_pred = pred_diff.reshape(X.shape)
+    Z_mean1 = mean1.reshape(X.shape)
+    Z_mean2 = mean2.reshape(X.shape)
+    
+    # --- 3. Plotten im 2x2 Grid ---
+    fig = plt.figure(figsize=(16, 12)) # Etwas größer gemacht für 4 Plots
+    fig.suptitle("Einblick in das ATSLG-Gehirn: Realität vs. Teilmodelle", fontsize=16, fontweight='bold')
+    
+    # [Plot 1] Oben Links: Echter Bias
+    ax1 = fig.add_subplot(221, projection='3d')
+    surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
+    ax1.set_title("1. Echte Realität (Wahrer Fehler)")
+    ax1.set_xlabel("Dim 0")
+    ax1.set_ylabel("Dim 1")
+    fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
+    
+    # [Plot 2] Oben Rechts: Finales Modell
+    ax2 = fig.add_subplot(222, projection='3d')
+    surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Blues', alpha=0.8, edgecolor='none')
+    ax2.set_title("2. Finales ATSLG-Modell (Kombiniert)")
+    ax2.set_xlabel("Dim 0")
+    ax2.set_ylabel("Dim 1")
+    fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
+    
+    # [Plot 3] Unten Links: GPR 1
+    ax3 = fig.add_subplot(223, projection='3d')
+    surf3 = ax3.plot_surface(X, Y, Z_mean1, cmap='Oranges', alpha=0.8, edgecolor='none')
+    ax3.set_title("3. GPR 1 (Abweichungsklasse)")
+    ax3.set_xlabel("Dim 0")
+    ax3.set_ylabel("Dim 1")
+    fig.colorbar(surf3, ax=ax3, shrink=0.5, aspect=10, pad=0.1)
+    
+    # [Plot 4] Unten Rechts: GPR 2
+    ax4 = fig.add_subplot(224, projection='3d')
+    surf4 = ax4.plot_surface(X, Y, Z_mean2, cmap='Greens', alpha=0.8, edgecolor='none')
+    ax4.set_title("4. GPR 2 (Übereinstimmungsklasse)")
+    ax4.set_xlabel("Dim 0")
+    ax4.set_ylabel("Dim 1")
+    fig.colorbar(surf4, ax=ax4, shrink=0.5, aspect=10, pad=0.1)
+
+    # Messpunkte einzeichnen
+    if len(selector.space.selected_points) > 0:
+        selected_X = np.array(selector.space.selected_points)
+        pt_y_true = np.array(space.get_values_for_points(selected_X, save_points=False))
+        pt_y_illus = np.array([space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+        pt_diff = pt_y_true - pt_y_illus
+        
+        # Alle Punkte im finalen Plot anzeigen
+        ax2.scatter(selected_X[:, 0], selected_X[:, 1], pt_diff, color='black', s=20, label="Alle Tauchgänge", zorder=5)
+        ax2.legend()
+        
+        # Punkte clever aufteilen: Wer wurde an welchen GPR verfüttert?
+        try:
+            labels = selector.gpc.predict(selected_X) # 1=Kaputt, 0=Gesund
+            X_err = selected_X[labels == 1]
+            diff_err = pt_diff[labels == 1]
+            X_ok = selected_X[labels == 0]
+            diff_ok = pt_diff[labels == 0]
+            
+            # GPR 1 bekommt nur die abweichenden Punkte zu sehen
+            if len(X_err) > 0:
+                ax3.scatter(X_err[:, 0], X_err[:, 1], diff_err, color='black', s=20, label="Trainingsdaten GPR 1", zorder=5)
+                ax3.legend()
+                
+            # GPR 2 bekommt nur die passenden Punkte zu sehen
+            if len(X_ok) > 0:
+                ax4.scatter(X_ok[:, 0], X_ok[:, 1], diff_ok, color='black', s=20, label="Trainingsdaten GPR 2", zorder=5)
+                ax4.legend()
+        except:
+            pass # Überspringen, falls Klassifikator noch nicht bereit
+            
+    plt.tight_layout()
+    plt.show()
+# ---------------------------------------------------------
+
+
+def main():
+    print("="*50)
+    print("START: ALGORITHMUS ENTWICKLUNGS-UMGEBUNG")
+    print("="*50)
+
+    # Testraum
+    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "with_noise" / "test_4.json"
+    print(f"[1] Lade Raum: {test_file_path.name}")
+    
+    functions = load_functions_from_json(test_file_path)
+    space = Space(dimensions=[(0, 10), (0, 10)], functions=functions, n_points=101, criticality_thresholds=None)
+
+    # 2. BIAS AKTIVIEREN
+    print("[2] Biases aktivieren...")
+    bias3 = RegionDependentBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), drop_factor=0.1)
+    
+    ultimate_pipeline = BiasChain([bias3])
+    space.activate_bias(ultimate_pipeline)
+
+    # 3. SELEKTOR STARTEN
+    method = "atslg"
+    n_select =100
+    metrics_to_calc = ["general", "extremum_search"]
+    
+    space.reset_selected_points()
+    
+    # HIER GEÄNDERT: active_selector fängt den Selector aus der Funktion auf
+    metrics_real, metrics_illu, duration, active_selector = evaluate_single_config(space, method, n_select, metrics_to_calc)
+
+    # 4. EXCEL EXPORT
+    print("\n[4] Speichere Ergebnisse in Excel...")
+    base_info = {
+        "Testdatei": test_file_path.name,
+        "Methode": method,
+        "Budget (n_select)": n_select,
+        "Dauer (Sekunden)": round(duration, 2)
+    }
+
+    row_real = {**base_info, "Welt": "Realität (Ground Truth)", **metrics_real}
+    row_illusion = {**base_info, "Welt": "Illusion (Sensordaten)", **metrics_illu}
+
+    output_dir = base_path / "evaluations"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = output_dir / f"dev_ergebnisse_{method}_{timestamp}.xlsx"
+
+    df = pd.DataFrame([row_illusion, row_real])
+    df.to_excel(output_file, index=False, sheet_name="Metriken")
+
+    # 5. ERGEBNISSE AUSGEBEN
+    print("\n" + "-"*50)
+    print(f"📊 ERGEBNISSE ({method}) - Dauer: {duration:.2f}s")
+    print(f"📂 Datei: {output_file}")
+    print("-" * 50)
+    
+    print(f"Maximal gefundene Gefahr (Illusion): {metrics_illu.get('max_criticality_selected', 0):.4f}")
+    print(f"Maximal gefundene Gefahr (Realität): {metrics_real.get('max_criticality_selected', 0):.4f}")
+    print(f"Sim-to-Reality GAP: {metrics_illu.get('max_criticality_selected', 0) - metrics_real.get('max_criticality_selected', 0):+.4f}")
+
+    # 6. VISUALISIERUNG
+    print("\n[6] Öffne 3D-Plots...")
+    space.visualizer.plot_3d_two_varied(simulate_bias=False)
+    space.visualizer.plot_3d_two_varied(simulate_bias=True)
+    
+    # HIER GEÄNDERT: Aufruf des neuen ATSLG Plots
+    if method == "atslg":
+        plot_atslg_landscape(active_selector, space)
+
+if __name__ == "__main__":
+    main()

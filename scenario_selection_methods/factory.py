@@ -19,7 +19,7 @@ from selector_random import RandomSelector, SobolSelector, LatinHypercubeSelecto
 from selector_gpr import GPSTLSelector
 from selector_ann import ANNSelector
 from selector_is import ImportanceSamplingSelector
-
+from selector_atslg import ATSLGSelector, StandardGPRSelector
 
 def get_selector(name: str, space, n_select: int):
     """
@@ -56,7 +56,12 @@ def get_selector(name: str, space, n_select: int):
         return GPSTLSelector(space, n_select)
     elif name.lower() == "ann":
         return ANNSelector(space, n_select)
+    elif name == "atslg":
+        return ATSLGSelector(space, n_select)
+    elif name == "atslgnc":
+        return ATSLGSelector(space, n_select)
     elif name == "is":
         return ImportanceSamplingSelector(space, n_select)
     else:
         raise ValueError(f"Unknown selection method: {name}")
+    
