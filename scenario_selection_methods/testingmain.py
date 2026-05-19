@@ -5,6 +5,10 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import webbrowser
+import os
 
 # Pfade setzen
 base_path = Path(__file__).parent
@@ -15,14 +19,13 @@ if cs_path not in sys.path:
 from functionloader import load_functions_from_json
 from space import Space
 from factory import get_selector
-from bias import RegionDependentBias, CalibrationBias, BiasChain, AxisGradientBias
+from bias import RegionDependentBias, CalibrationBias, BiasChain, AxisGradientBias,FlatRegionBias
 
 def evaluate_single_config(space, method_name, n_select, eval_metrics):
     """Führt einen Selektor aus und vergleicht Illusion mit Realität."""
     print(f" Starte Selektor: {method_name}")
     selector = get_selector(method_name, space, n_select)
 
-    # NEU: Der intelligente Metrik-Filter (verhindert Abstürze)
     safe_metrics = eval_metrics.copy() 
     if not hasattr(selector, "get_model") and "model_reconstruction" in safe_metrics:
         safe_metrics.remove("model_reconstruction")
@@ -30,7 +33,6 @@ def evaluate_single_config(space, method_name, n_select, eval_metrics):
 
     start_time = time.perf_counter()
     
-    # Nutzt jetzt "safe_metrics" statt "eval_metrics"
     if hasattr(selector, "select"):
         selector.select()
         metrics_real = space.metrics.run_metrics_suite(method_categories=safe_metrics)
@@ -42,7 +44,6 @@ def evaluate_single_config(space, method_name, n_select, eval_metrics):
     
     duration = time.perf_counter() - start_time
 
-    # Metriken der Illusion berechnen
     metrics_illusion = metrics_real.copy()
     if getattr(space, "bias", None) is not None and len(space.selected_points) > 0:
         raw_values = space.get_values_for_points(space.selected_points, save_points=False)
@@ -54,13 +55,8 @@ def evaluate_single_config(space, method_name, n_select, eval_metrics):
 
     return metrics_real, metrics_illusion, duration, selector
 
-
-# --- NEUE FUNKTION ZUM PLOTTEN DER FEHLERLANDSCHAFTEN ---
 def plot_standard_gpr_landscape(selector, space, resolution=50):
-    """
-    Erstellt einen 2-Panel 3D-Plot für den Standard-GPR ohne Klassifizierung.
-    Zeigt: Echter Fehler vs. Gelerntes Einzel-Modell.
-    """
+    """Ablationsstudie: 2-Panel Plot."""
     print("\n[Visualisierung] Generiere Fehler-Landschaft für Standard-GPR (2 Panels)...")
     
     bounds = space.dimensions
@@ -69,35 +65,29 @@ def plot_standard_gpr_landscape(selector, space, resolution=50):
     X, Y = np.meshgrid(x, y)
     grid_points = np.c_[X.ravel(), Y.ravel()]
     
-    # 1. Echten Fehler berechnen
     y_true = np.array(space.get_values_for_points(grid_points, save_points=False))
     y_illus = np.array([space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
     Z_true = (y_true - y_illus).reshape(X.shape)
     
-    # 2. Gelernten Fehler berechnen (Nur ein GPR!)
     if hasattr(selector.gpr, "X_train_"):
         mean, _ = selector.gpr.predict(grid_points, return_std=True)
     else:
         mean = np.zeros(len(grid_points))
     Z_pred = mean.reshape(X.shape)
     
-    # 3. Plotten im 1x2 Grid
     fig = plt.figure(figsize=(14, 6))
     fig.suptitle("Ablationsstudie: Standard GPR-Verhalten ohne Klassifikator", fontsize=14, fontweight='bold')
     
-    # Linker Plot
     ax1 = fig.add_subplot(121, projection='3d')
     surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
     ax1.set_title("Echte Realität (Wahrer Fehler)")
     fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
     
-    # Rechter Plot
     ax2 = fig.add_subplot(122, projection='3d')
     surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Oranges', alpha=0.8, edgecolor='none')
     ax2.set_title("Gelerntes Modell (Einziger GPR)")
     fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
 
-    # Trainingspunkte einzeichnen
     if len(selector.space.selected_points) > 0:
         selected_X = np.array(selector.space.selected_points)
         pt_y_true = np.array(space.get_values_for_points(selected_X, save_points=False))
@@ -108,12 +98,24 @@ def plot_standard_gpr_landscape(selector, space, resolution=50):
     plt.tight_layout()
     plt.show()
 
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import webbrowser
+import os
+
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import webbrowser
+import os
+
 def plot_atslg_landscape(selector, space, resolution=50):
     """
-    Erstellt ein 2x3 Gitter (6 Panels). 
-    Zeigt Realität, Finale, GPC Unsicherheit, GPR1 Mean, GPR1 Varianz und GPR2 Mean.
+    Erstellt ein interaktives 2x5 Gitter (10 Panels) im Browser via Plotly.
+    Inklusive aller Samples (Initial & Aktiv).
     """
-    print("\n[Visualisierung] Generiere vollständige Analyse-Plots (6 Panels)...")
+    print("\n[Visualisierung] Generiere interaktive HTML-Datei inkl. Samples (10 Panels)...")
     
     bounds = space.dimensions
     x = np.linspace(bounds[0][0], bounds[0][1], resolution)
@@ -121,120 +123,144 @@ def plot_atslg_landscape(selector, space, resolution=50):
     X, Y = np.meshgrid(x, y)
     grid_points = np.c_[X.ravel(), Y.ravel()]
     
-    # --- 1. Daten berechnen ---
+    # --- 1. Echte Daten berechnen ---
     y_true = np.array(space.get_values_for_points(grid_points, save_points=False))
     y_illus = np.array([space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
     Z_true = (y_true - y_illus).reshape(X.shape)
     
+    # --- 2. Modelle abfragen ---
     try:
         p1 = selector.gpc.predict_proba(grid_points)[:, 1]
-        gpc_uncertainty = p1 * (1 - p1) * 4 
+        p2 = 1.0 - p1
+        gpc_uncertainty_raw = p1 * p2
+        gpc_uncertainty_plot = gpc_uncertainty_raw * 4 
     except:
         p1 = np.zeros(len(grid_points))
-        gpc_uncertainty = np.zeros(len(grid_points))
+        p2 = np.ones(len(grid_points))
+        gpc_uncertainty_raw = np.zeros(len(grid_points))
+        gpc_uncertainty_plot = np.zeros(len(grid_points))
         
-    mean1, std1 = selector.gpr1.predict(grid_points, return_std=True) if hasattr(selector.gpr1, "X_train_") else (np.zeros(len(grid_points)), np.ones(len(grid_points)))
-    mean2, _ = selector.gpr2.predict(grid_points, return_std=True) if hasattr(selector.gpr2, "X_train_") else (np.zeros(len(grid_points)), np.zeros(len(grid_points)))
+    if hasattr(selector.gpr1, "X_train_"):
+        mean1, std1 = selector.gpr1.predict(grid_points, return_std=True)
+    else:
+        mean1, std1 = np.zeros(len(grid_points)), np.ones(len(grid_points))
+        
+    if hasattr(selector.gpr2, "X_train_"):
+        mean2, std2 = selector.gpr2.predict(grid_points, return_std=True)
+    else:
+        mean2, std2 = np.zeros(len(grid_points)), np.ones(len(grid_points))
 
-    pred_diff = (p1 * mean1) + ((1 - p1) * mean2)
+    # --- 3. Mathematik der Acquisition Function ---
+    pred_diff = (p1 * mean1) + (p2 * mean2) 
     
-    # --- 2. Plotten im 2x3 Grid ---
-    fig = plt.figure(figsize=(20, 12)) 
-    fig.suptitle("Vollständige ATSLG-Diagnose: Realität, Regressoren & Klassifikator", fontsize=16, fontweight='bold')
+    E1 = (mean1 ** 2) + (std1 ** 2)
+    E2 = (mean2 ** 2) + (std2 ** 2)
+    EI = (p1 * E1) + (p2 * E2)
     
-    # [1] Realität
-    ax1 = fig.add_subplot(231, projection='3d')
-    surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
-    ax1.set_title("1. Echte Realität")
-    fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
+    U_E = np.max(EI) if np.max(EI) > 0 else 1.0
+    U_C = np.max(gpc_uncertainty_raw) if np.max(gpc_uncertainty_raw) > 0 else 1.0
     
-    # [2] Finales Modell
-    ax2 = fig.add_subplot(232, projection='3d')
-    surf2 = ax2.plot_surface(X, Y, pred_diff.reshape(X.shape), cmap='Blues', alpha=0.8, edgecolor='none')
-    ax2.set_title("2. Finales ATSLG-Modell")
-    fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
-    
-    # [3] GPC Unsicherheit
-    ax3 = fig.add_subplot(233, projection='3d')
-    surf3 = ax3.plot_surface(X, Y, gpc_uncertainty.reshape(X.shape), cmap='Wistia', alpha=0.8, edgecolor='none')
-    ax3.set_title("6. GPC Unsicherheit (Grenzbereich)")
-    fig.colorbar(surf3, ax=ax3, shrink=0.5, aspect=10, pad=0.1)
-    
-    # [4] GPR 1 Mean
-    ax4 = fig.add_subplot(234, projection='3d')
-    surf4 = ax4.plot_surface(X, Y, mean1.reshape(X.shape), cmap='Oranges', alpha=0.8, edgecolor='none')
-    ax4.set_title("3. GPR 1 Mean (Fehler-Form)")
-    fig.colorbar(surf4, ax=ax4, shrink=0.5, aspect=10, pad=0.1)
-    
-    # [5] GPR 1 Varianz
-    ax5 = fig.add_subplot(235, projection='3d')
-    surf5 = ax5.plot_surface(X, Y, (std1**2).reshape(X.shape), cmap='magma', alpha=0.8, edgecolor='none')
-    ax5.set_title("4. GPR 1 Varianz (Unsicherheit)")
-    fig.colorbar(surf5, ax=ax5, shrink=0.5, aspect=10, pad=0.1)
+    w = 0.5 # Echte 50/50 Balance
+    af_scores = w * (EI / U_E) + (1 - w) * (gpc_uncertainty_raw / U_C)
 
-    # [6] GPR 2 Mean (Wieder da!)
-    ax6 = fig.add_subplot(236, projection='3d')
-    surf6 = ax6.plot_surface(X, Y, mean2.reshape(X.shape), cmap='Greens', alpha=0.8, edgecolor='none')
-    ax6.set_title("5. GPR 2 Mean (Gesund-Ebene)")
-    fig.colorbar(surf6, ax=ax6, shrink=0.5, aspect=10, pad=0.1)
+    # --- 4. Plotly Interaktive Figure erstellen ---
+    fig = make_subplots(
+        rows=2, cols=5,
+        specs=[[{'is_3d': True}] * 5, [{'is_3d': True}] * 5],
+        subplot_titles=(
+            "1. Realität", "2. Finales Modell", "3. P1 (Fehler)", "4. P2 (Gesund)", "5. GPC Unsicherheit",
+            "6. Acquisition Function", "7. GPR 1 Mean", "8. GPR 1 Var", "9. GPR 2 Mean", "10. GPR 2 Var"
+        ),
+        horizontal_spacing=0.02,
+        vertical_spacing=0.05
+    )
 
-    # Messpunkte einzeichnen
+    # Hilfsfunktion zum Hinzufügen der Oberflächen
+    def add_surface(z_data, colorscale, row, col):
+        fig.add_trace(go.Surface(x=x, y=y, z=z_data.reshape(X.shape), colorscale=colorscale, showscale=False), row=row, col=col)
+
+    # Flächen zeichnen
+    add_surface(Z_true, 'reds', 1, 1)
+    add_surface(pred_diff, 'blues', 1, 2)
+    add_surface(p1, 'purples', 1, 3)
+    add_surface(p2, 'ylgn', 1, 4)
+    add_surface(gpc_uncertainty_plot, 'solar', 1, 5) 
+
+    add_surface(af_scores, 'plasma', 2, 1)
+    add_surface(mean1, 'oranges', 2, 2)
+    add_surface(std1**2, 'inferno', 2, 3)
+    add_surface(mean2, 'greens', 2, 4)
+    add_surface(std2**2, 'viridis', 2, 5)
+
+    # --- 5. SAMPLES (PUNKTE) HINZUFÜGEN ---
     if len(selector.space.selected_points) > 0:
         selected_X = np.array(selector.space.selected_points)
         pt_y_true = np.array(space.get_values_for_points(selected_X, save_points=False))
         pt_diff = pt_y_true - np.array([space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
         
         n_init = getattr(selector, 'n_initial', 10)
-        ax2.scatter(selected_X[:n_init, 0], selected_X[:n_init, 1], pt_diff[:n_init], color='blue', marker='^', s=45, label="Initial", zorder=10)
-        ax2.scatter(selected_X[n_init:, 0], selected_X[n_init:, 1], pt_diff[n_init:], color='black', marker='o', s=20, label="Aktiv", zorder=10)
-        ax2.legend()
         
+        # Panel 2: Finales Modell (Initial vs. Aktiv)
+        # Initiale Punkte (Blau, Diamanten)
+        fig.add_trace(go.Scatter3d(
+            x=selected_X[:n_init, 0], y=selected_X[:n_init, 1], z=pt_diff[:n_init],
+            mode='markers', marker=dict(size=6, color='blue', symbol='diamond'),
+            name="Initiale Samples"
+        ), row=1, col=2)
+        
+        # Aktive Punkte (Schwarz, Kreise)
+        fig.add_trace(go.Scatter3d(
+            x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=pt_diff[n_init:],
+            mode='markers', marker=dict(size=4, color='black', symbol='circle'),
+            name="Aktive Samples"
+        ), row=1, col=2)
+
+        # Panel 6: Acquisition Function (Alle aktiven Punkte oben auf die Decke projiziert)
+        max_af = np.max(af_scores) if np.max(af_scores) > 0 else 1.0
+        fig.add_trace(go.Scatter3d(
+            x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=np.full(len(selected_X)-n_init, max_af),
+            mode='markers', marker=dict(size=4, color='black', symbol='circle'),
+            name="Gezogene Punkte (AF)"
+        ), row=2, col=1)
+        
+        # Panel 7 & 9: GPR 1 und GPR 2 Split
         try:
             labels = selector.gpc.predict(selected_X) 
-            ax4.scatter(selected_X[labels == 1, 0], selected_X[labels == 1, 1], pt_diff[labels == 1], color='black', s=15, zorder=10)
-            ax6.scatter(selected_X[labels == 0, 0], selected_X[labels == 0, 1], pt_diff[labels == 0], color='black', s=15, zorder=10)
+            # GPR 1 (Fehlerbereich)
+            mask_1 = labels == 1
+            if np.any(mask_1):
+                fig.add_trace(go.Scatter3d(
+                    x=selected_X[mask_1, 0], y=selected_X[mask_1, 1], z=pt_diff[mask_1],
+                    mode='markers', marker=dict(size=3, color='black'), showlegend=False
+                ), row=2, col=2)
+                
+            # GPR 2 (Gesunder Bereich)
+            mask_0 = labels == 0
+            if np.any(mask_0):
+                fig.add_trace(go.Scatter3d(
+                    x=selected_X[mask_0, 0], y=selected_X[mask_0, 1], z=pt_diff[mask_0],
+                    mode='markers', marker=dict(size=3, color='black'), showlegend=False
+                ), row=2, col=4)
         except:
             pass
-            
-    plt.tight_layout()
-    plt.show()
 
-    # Messpunkte einzeichnen
-    if len(selector.space.selected_points) > 0:
-        selected_X = np.array(selector.space.selected_points)
-        pt_y_true = np.array(space.get_values_for_points(selected_X, save_points=False))
-        pt_y_illus = np.array([space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
-        pt_diff = pt_y_true - pt_y_illus
-        
-        n_init = getattr(selector, 'n_initial', 10)
-        X_init = selected_X[:n_init]
-        diff_init = pt_diff[:n_init]
-        X_active = selected_X[n_init:]
-        diff_active = pt_diff[n_init:]
+    # --- 6. Layout & Export ---
+    fig.update_layout(
+        title_text="Vollständige ATSLG-Architektur (Interaktiv)",
+        title_x=0.5, height=900, width=2200, margin=dict(l=0, r=0, b=0, t=50),
+        showlegend=False # Legende ausblenden für mehr Platz
+    )
 
-        if len(X_init) > 0:
-            ax2.scatter(X_init[:, 0], X_init[:, 1], diff_init, color='blue', marker='^', s=45, label="Initiale Samples", zorder=6)
-        if len(X_active) > 0:
-            ax2.scatter(X_active[:, 0], X_active[:, 1], diff_active, color='black', marker='o', s=20, label="Aktive Suche", zorder=5)
-            
-        ax2.legend()
-        
-        try:
-            labels = selector.gpc.predict(selected_X) 
-            X_err = selected_X[labels == 1]
-            diff_err = pt_diff[labels == 1]
-            X_ok = selected_X[labels == 0]
-            diff_ok = pt_diff[labels == 0]
-            
-            if len(X_err) > 0:
-                ax3.scatter(X_err[:, 0], X_err[:, 1], diff_err, color='black', s=20, label="Daten GPR 1", zorder=5)
-            if len(X_ok) > 0:
-                ax4.scatter(X_ok[:, 0], X_ok[:, 1], diff_ok, color='black', s=20, label="Daten GPR 2", zorder=5)
-        except:
-            pass 
-            
-    plt.tight_layout()
-    plt.show()
+    # Kamera-Winkel
+    camera = dict(eye=dict(x=1.5, y=1.5, z=0.5))
+    for i in range(1, 11):
+        fig.update_layout(**{f'scene{i}_camera': camera})
+
+    html_file = "atslg_interaktiv.html"
+    fig.write_html(html_file)
+    print(f"[Visualisierung] Fertig! Öffne {html_file} im Browser...")
+    
+    webbrowser.open('file://' + os.path.realpath(html_file))
 
 def main():
     print("="*50)
@@ -242,7 +268,7 @@ def main():
     print("="*50)
 
     # Testraum
-    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "with_noise" / "test_4.json"
+    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "without_noise" / "test_1.json"
     print(f"[1] Lade Raum: {test_file_path.name}")
     
     functions = load_functions_from_json(test_file_path)
@@ -250,18 +276,16 @@ def main():
 
     # 2. BIAS AKTIVIEREN
     print("[2] Biases aktivieren...")
-    bias3 = RegionDependentBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), drop_factor=0.1)
-    
+    bias3 = FlatRegionBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), offset=0.2)
     ultimate_pipeline = BiasChain([bias3])
     space.activate_bias(ultimate_pipeline)
 
     # 3. SELEKTOR STARTEN
     method = "atslg"
-    n_select = 100
+    n_select = 15
     metrics_to_calc = ["general", "extremum_search"]
     
     space.reset_selected_points()
-    
     metrics_real, metrics_illu, duration, active_selector = evaluate_single_config(space, method, n_select, metrics_to_calc)
 
     # 4. EXCEL EXPORT
@@ -288,9 +312,7 @@ def main():
     # 5. ERGEBNISSE AUSGEBEN
     print("\n" + "-"*50)
     print(f"📊 ERGEBNISSE ({method}) - Dauer: {duration:.2f}s")
-    print(f"📂 Datei: {output_file}")
     print("-" * 50)
-    
     print(f"Maximal gefundene Gefahr (Illusion): {metrics_illu.get('max_criticality_selected', 0):.4f}")
     print(f"Maximal gefundene Gefahr (Realität): {metrics_real.get('max_criticality_selected', 0):.4f}")
     print(f"Sim-to-Reality GAP: {metrics_illu.get('max_criticality_selected', 0) - metrics_real.get('max_criticality_selected', 0):+.4f}")
@@ -304,8 +326,6 @@ def main():
         plot_atslg_landscape(active_selector, space)
     elif method == "atslgnc":
         plot_standard_gpr_landscape(active_selector, space)
-    elif method == "standard_gpr":
-        print("Der StandardGPR hat keinen Klassifikator. Zeige nur die Standard-Plots.")
 
     print("Skript ist fertig. Plot sollte offen sein.")
     input("Drücke ENTER im Terminal, um das Skript und die Plots zu schließen...")

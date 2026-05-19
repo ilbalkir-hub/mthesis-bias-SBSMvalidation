@@ -45,7 +45,7 @@ class ATSLGSelector(BaseSelector):
         dim = len(bounds)
         
         # 1. Initialisierung (Gleichung 17 / LHS)
-        sampler = qmc.LatinHypercube(d=dim, seed=35)  #Powerpoint seed=42
+        sampler = qmc.LatinHypercube(d=dim, seed=22)  #Powerpoint seed=42
         X_train = sampler.random(n=self.n_initial)
         X_train = qmc.scale(X_train, [b[0] for b in bounds], [b[1] for b in bounds])
         
@@ -107,7 +107,7 @@ class ATSLGSelector(BaseSelector):
             U_C = np.max(class_var) if np.max(class_var) > 0 else 1.0
             
             w = 0.5 # Gewichtungsfaktor nach Paper
-            scores = w * (EI / U_E) + (class_var / U_C)
+            scores = w * (EI / U_E) + (1 - w) * (class_var / U_C) #her 
             var1 = (EI / U_E)
             var2 = (EI / U_E)
             # Wähle die Top-Kandidaten aus
@@ -157,7 +157,7 @@ class StandardGPRSelector(BaseSelector):
         dim = len(bounds)
         
         # 1. Initialisierung (Latin Hypercube)
-        sampler = qmc.LatinHypercube(d=dim, seed=12)
+        sampler = qmc.LatinHypercube(d=dim, seed=11)
         X_train = sampler.random(n=self.n_initial)
         X_train = qmc.scale(X_train, [b[0] for b in bounds], [b[1] for b in bounds])
         

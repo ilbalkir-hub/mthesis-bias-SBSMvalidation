@@ -1,0 +1,43 @@
+{
+    "functions": [
+        {
+            "type": "Gaussian",
+            "mean": [
+                7,2
+            ],
+            "std_dev": [
+                1,1
+            ],
+            "max_amplitude": 1,
+            "active_dims": [
+                0,1
+            ]
+        },
+        {
+            "type": "Gaussian",
+            "mean": [
+                2,2
+            ],
+            "std_dev": [
+                1,1
+            ],
+            "max_amplitude": 1,
+            "active_dims": [
+                0,1
+            ]
+        },
+        {
+            "type": "Gaussian",
+            "mean": [
+                2,7
+            ],
+            "std_dev": [
+                1,1
+            ],
+            "max_amplitude": 1,
+            "active_dims": [
+                0,1
+            ]
+        }
+    ]
+}
