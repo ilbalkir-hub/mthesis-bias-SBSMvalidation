@@ -20,6 +20,7 @@ from selector_gpr import GPSTLSelector
 from selector_ann import ANNSelector
 from selector_is import ImportanceSamplingSelector
 from selector_atslg import ATSLGSelector, StandardGPRSelector
+from selector_dinn import NNBiasSelector
 
 def get_selector(name: str, space, n_select: int):
     """
@@ -62,6 +63,8 @@ def get_selector(name: str, space, n_select: int):
         return StandardGPRSelector(space, n_select)
     elif name == "is":
         return ImportanceSamplingSelector(space, n_select)
+    elif name == "dinn":
+        return NNBiasSelector(space, n_select)
     else:
         raise ValueError(f"Unknown selection method: {name}")
     

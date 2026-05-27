@@ -27,7 +27,10 @@ Usage:
     space.visualizer.plot_3d_two_varied(show_critplane=True, fixed_values=[None, None, 5])
     space.visualizer.plot_top_down_2d(save_path="output/heatmap", format="png")
 """
-
+import math
+from sklearn.base import clone
+from mapie.regression import CrossConformalRegressor
+from sklearn.model_selection import LeaveOneOut
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import matplotlib
@@ -531,4 +534,508 @@ class SpaceVisualizer:
         # plt.title("2D Class Boundaries and Points")
         plt.legend()
         plt.tight_layout()
+        plt.show()
+
+    # =========================================================================
+    # NEUE METHODEN FÜR DIE MASTERARBEIT (ACTIVE LEARNING AUSWERTUNGEN)
+    # =========================================================================
+
+    def plot_atslg_landscape(self, selector, resolution=50):
+        """
+        Erstellt ein interaktives 2x5 Gitter (10 Panels) im Browser via Plotly.
+        Inklusive aller Samples (Initial & Aktiv).
+        """
+        from plotly.subplots import make_subplots # Lokal importieren, falls noch nicht oben
+        print("\n[Visualisierung] Generiere interaktive HTML-Datei inkl. Samples (10 Panels)...")
+        
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+        
+        # --- 1. Echte Daten berechnen ---
+        y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
+        y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+        Z_true = (y_true - y_illus).reshape(X.shape)
+        
+        # --- 2. Modelle abfragen ---
+        try:
+            # Versuch 1: Normaler Aufruf, falls das Modell trainiert wurde
+            p1 = selector.gpc.predict_proba(grid_points)[:, 1]
+        except:
+            # Fallback: Das Modell wurde nicht trainiert (nur eine Klasse vorhanden).
+            # Wir prüfen die letzten Trainingsdaten, um herauszufinden, welche Klasse das war.
+            if len(selector.sample_history) > 0:
+                last_X = selector.sample_history[-1]
+                # Wir berechnen die Labels für die Trainingsdaten neu
+                _, labels, _ = selector._get_diff_data(last_X)
+                # Da es nur eine Klasse gibt, reicht es, das erste Label anzuschauen
+                dominant_class = labels[0] 
+                prob = 1.0 if dominant_class == 1 else 0.0
+            else:
+                prob = 0.0 # Last Fallback
+                
+            p1 = np.full(len(grid_points), prob)
+            
+        p2 = 1.0 - p1
+        gpc_uncertainty_raw = p1 * p2
+        gpc_uncertainty_plot = gpc_uncertainty_raw * 4 
+            
+        if hasattr(selector, "gpr1") and hasattr(selector.gpr1, "X_train_"):
+            mean1, std1 = selector.gpr1.predict(grid_points, return_std=True)
+        else:
+            mean1, std1 = np.zeros(len(grid_points)), np.ones(len(grid_points))
+            
+        if hasattr(selector, "gpr2") and hasattr(selector.gpr2, "X_train_"):
+            mean2, std2 = selector.gpr2.predict(grid_points, return_std=True)
+        else:
+            mean2, std2 = np.zeros(len(grid_points)), np.ones(len(grid_points))
+
+        # --- 3. Mathematik ---
+        pred_diff = (p1 * mean1) + (p2 * mean2) 
+        E1 = (mean1 ** 2) + (std1 ** 2)
+        E2 = (mean2 ** 2) + (std2 ** 2)
+        EI = (p1 * E1) + (p2 * E2)
+        
+        U_E = np.max(EI) if np.max(EI) > 0 else 1.0
+        U_C = np.max(gpc_uncertainty_raw) if np.max(gpc_uncertainty_raw) > 0 else 1.0
+        
+        w = 0.5 
+        af_scores = w * (EI / U_E) + (1 - w) * (gpc_uncertainty_raw / U_C)
+
+        # --- 4. Plotly Interaktive Figure erstellen ---
+        fig = make_subplots(
+            rows=2, cols=5,
+            specs=[[{'is_3d': True}] * 5, [{'is_3d': True}] * 5],
+            subplot_titles=(
+                "1. Realität", "2. Finales Modell", "3. P1 (Fehler)", "4. P2 (kein Fehler)", "5. GPC Unsicherheit",
+                "6. Acquisition Function", "7. GPR 1 Mean", "8. GPR 1 Var", "9. GPR 2 Mean", "10. GPR 2 Var"
+            ),
+            horizontal_spacing=0.02, vertical_spacing=0.05
+        )
+
+        def add_surface(z_data, colorscale, row, col):
+            fig.add_trace(go.Surface(x=x, y=y, z=z_data.reshape(X.shape), colorscale=colorscale, showscale=False), row=row, col=col)
+
+        add_surface(Z_true, 'reds', 1, 1)
+        add_surface(pred_diff, 'blues', 1, 2)
+        add_surface(p1, 'purples', 1, 3)
+        add_surface(p2, 'ylgn', 1, 4)
+        add_surface(gpc_uncertainty_plot, 'solar', 1, 5) 
+        add_surface(af_scores, 'plasma', 2, 1)
+        add_surface(mean1, 'oranges', 2, 2)
+        add_surface(std1**2, 'inferno', 2, 3)
+        add_surface(mean2, 'greens', 2, 4)
+        add_surface(std2**2, 'viridis', 2, 5)
+
+        # --- 5. SAMPLES HINZUFÜGEN ---
+        if len(self.space.selected_points) > 0:
+            selected_X = np.array(self.space.selected_points)
+            pt_y_true = np.array(self.space.get_values_for_points(selected_X, save_points=False))
+            pt_diff = pt_y_true - np.array([self.space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+            
+            n_init = getattr(selector, 'n_initial', 10)
+            
+            # Panel 2: Finales Modell
+            fig.add_trace(go.Scatter3d(
+                x=selected_X[:n_init, 0], y=selected_X[:n_init, 1], z=pt_diff[:n_init],
+                mode='markers', marker=dict(size=6, color='blue', symbol='diamond'), name="Initiale Samples"
+            ), row=1, col=2)
+            
+            fig.add_trace(go.Scatter3d(
+                x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=pt_diff[n_init:],
+                mode='markers', marker=dict(size=4, color='black', symbol='circle'), name="Aktive Samples"
+            ), row=1, col=2)
+
+            # Panel 6: Acquisition Function
+            max_af = np.max(af_scores) if np.max(af_scores) > 0 else 1.0
+            fig.add_trace(go.Scatter3d(
+                x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=np.full(len(selected_X)-n_init, max_af),
+                mode='markers', marker=dict(size=4, color='black', symbol='circle'), name="Gezogene Punkte"
+            ), row=2, col=1)
+
+        # --- 6. Layout & Export ---
+        fig.update_layout(
+            title_text="Vollständige ATSLG-Architektur (Interaktiv)",
+            title_x=0.5, height=900, width=2200, margin=dict(l=0, r=0, b=0, t=50), showlegend=False
+        )
+
+        camera = dict(eye=dict(x=1.5, y=1.5, z=0.5))
+        for i in range(1, 11):
+            fig.update_layout(**{f'scene{i}_camera': camera})
+
+        html_file = "atslg_interaktiv.html"
+        fig.write_html(html_file)
+        print(f"[Visualisierung] Fertig! Öffne {html_file} im Browser...")
+        
+        import webbrowser
+        import os
+        webbrowser.open('file://' + os.path.realpath(html_file))
+
+    def plot_nn_landscape(self, selector, resolution=50):
+        """Zeigt, wie gut das Neuronale Netz die Realität gelernt hat."""
+        print("\n[Visualisierung] Generiere NN-Fehler-Landschaft (2 Panels)...")
+        
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+        
+        y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
+        y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+        Z_true = (y_true - y_illus).reshape(X.shape)
+        
+        if hasattr(selector, "nn_model"):
+            Z_pred = selector.nn_model.predict(grid_points).reshape(X.shape)
+        else:
+            Z_pred = np.zeros(X.shape)
+        
+        fig = plt.figure(figsize=(14, 6))
+        fig.suptitle("Evaluation: Neuronales Netz (Random Sampling)", fontsize=14, fontweight='bold')
+        
+        ax1 = fig.add_subplot(121, projection='3d')
+        surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
+        ax1.set_title("Echte Realität (Wahrer Fehler)")
+        fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
+        
+        ax2 = fig.add_subplot(122, projection='3d')
+        surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Purples', alpha=0.8, edgecolor='none')
+        ax2.set_title("Gelerntes NN-Modell (MLPRegressor)")
+        fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
+
+        if len(self.space.selected_points) > 0:
+            selected_X = np.array(self.space.selected_points)
+            pt_y_true = np.array(self.space.get_values_for_points(selected_X, save_points=False))
+            pt_y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+            pt_diff = pt_y_true - pt_y_illus
+            ax2.scatter(selected_X[:, 0], selected_X[:, 1], pt_diff, color='black', s=30, label="Gezogene Samples")
+            ax2.legend()
+            
+        plt.tight_layout()
+        plt.show()
+
+    def plot_standard_gpr_landscape(self, selector, resolution=50):
+        """Ablationsstudie: 2-Panel Plot für das Standard-GPR."""
+        print("\n[Visualisierung] Generiere Fehler-Landschaft für Standard-GPR (2 Panels)...")
+        
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+        
+        y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
+        y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+        Z_true = (y_true - y_illus).reshape(X.shape)
+        
+        if hasattr(selector, "gpr") and hasattr(selector.gpr, "X_train_"):
+            mean, _ = selector.gpr.predict(grid_points, return_std=True)
+        else:
+            mean = np.zeros(len(grid_points))
+        Z_pred = mean.reshape(X.shape)
+        
+        fig = plt.figure(figsize=(14, 6))
+        fig.suptitle("Ablationsstudie: Standard GPR-Verhalten ohne Klassifikator", fontsize=14, fontweight='bold')
+        
+        ax1 = fig.add_subplot(121, projection='3d')
+        surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
+        ax1.set_title("Echte Realität (Wahrer Fehler)")
+        fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, pad=0.1)
+        
+        ax2 = fig.add_subplot(122, projection='3d')
+        surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Oranges', alpha=0.8, edgecolor='none')
+        ax2.set_title("Gelerntes Modell (Einziger GPR)")
+        fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
+
+        if len(self.space.selected_points) > 0:
+            selected_X = np.array(self.space.selected_points)
+            pt_y_true = np.array(self.space.get_values_for_points(selected_X, save_points=False))
+            pt_y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+            ax2.scatter(selected_X[:, 0], selected_X[:, 1], (pt_y_true - pt_y_illus), color='black', s=20, label="Trainingsdaten")
+            ax2.legend()
+            
+        plt.tight_layout()
+        plt.show()
+
+    def plot_dinn_landscape(self, selector, resolution=50):
+        """Zeigt Realität, NN-Vorhersage und die MAPIE-Unsicherheitskarte in 3 Panels."""
+        print("\n[Visualisierung] Generiere DINN-Fehler-Landschaft inkl. Unsicherheit (3 Panels)...")
+        
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+        
+        # 1. Echte Realität
+        y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
+        y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+        Z_true = (y_true - y_illus).reshape(X.shape)
+        
+        # 2. Modell & Unsicherheit (MAPIE) neu berechnen auf dem finalen Stand
+        if hasattr(selector, "nn_model") and len(selector.sample_history) > 0:
+            from mapie.regression import CrossConformalRegressor
+            from sklearn.model_selection import LeaveOneOut
+            
+            # Letzter Stand der Trainingsdaten
+            current_X = selector.sample_history[-1]
+            
+            # Ground Truth der bekannten Punkte für MAPIE berechnen
+            y_true_train = np.array(self.space.get_values_for_points(current_X, save_points=False))
+            y_illus_train = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true_train, current_X)])
+            current_diffs = y_true_train - y_illus_train
+            
+            # MAPIE ein letztes Mal auf alle Daten anwenden, um die Map zu malen
+            mapie = CrossConformalRegressor(
+                estimator=selector.nn_model, 
+                cv=LeaveOneOut(), 
+                method='plus', 
+                random_state=42
+            )
+            mapie.fit_conformalize(current_X, current_diffs)
+            
+            try:
+                pred_mean, pis = mapie.predict_interval(grid_points)
+            except TypeError:
+                pred_mean, pis = mapie.predict_interval(grid_points, alpha=0.1)
+                
+            Z_pred = pred_mean.reshape(X.shape)
+            
+            # Unsicherheit ausrechnen
+            lower_bound = pis[:, 0, 0]
+            upper_bound = pis[:, 1, 0]
+            Z_uncert = (upper_bound - lower_bound).reshape(X.shape)
+        else:
+            Z_pred = np.zeros(X.shape)
+            Z_uncert = np.zeros(X.shape)
+        
+        # --- 3 Panels zeichnen ---
+        import matplotlib.pyplot as plt
+        fig = plt.figure(figsize=(18, 6))
+        fig.suptitle("Evaluation: Neuronales Netz mit MAPIE (Jackknife+)", fontsize=14, fontweight='bold')
+        
+        # Panel 1: Realität
+        ax1 = fig.add_subplot(131, projection='3d')
+        surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
+        ax1.set_title("Echte Realität (Bias)")
+        fig.colorbar(surf1, ax=ax1, shrink=0.5, pad=0.1)
+        
+        # Panel 2: Vorhersage
+        ax2 = fig.add_subplot(132, projection='3d')
+        surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Purples', alpha=0.8, edgecolor='none')
+        ax2.set_title("Gelerntes NN (Vorhersage)")
+        fig.colorbar(surf2, ax=ax2, shrink=0.5, pad=0.1)
+
+        # Panel 3: Unsicherheit
+        ax3 = fig.add_subplot(133, projection='3d')
+        surf3 = ax3.plot_surface(X, Y, Z_uncert, cmap='YlGnBu', alpha=0.8, edgecolor='none')
+        ax3.set_title("Unsicherheitskarte (Intervallbreite)")
+        fig.colorbar(surf3, ax=ax3, shrink=0.5, pad=0.1)
+
+        # Gemessene Samples als schwarze Punkte einzeichnen
+        # Gemessene Samples differenziert einzeichnen (Initial vs. Aktiv)
+        if len(self.space.selected_points) > 0:
+            selected_X = np.array(self.space.selected_points)
+            pt_y_true = np.array(self.space.get_values_for_points(selected_X, save_points=False))
+            pt_y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
+            pt_diff = pt_y_true - pt_y_illus
+            
+            # Anzahl der initialen Punkte abrufen (Fallback auf 10)
+            n_init = getattr(selector, 'n_initial', 10)
+            
+            # --- Panel 2: Vorhersage ---
+            # 1. Initiale Samples (Blaue Diamanten)
+            ax2.scatter(
+                selected_X[:n_init, 0], 
+                selected_X[:n_init, 1], 
+                pt_diff[:n_init], 
+                color='blue', 
+                marker='D', 
+                s=40, 
+                label="Initiale Samples"
+            )
+            
+            # 2. Aktive Samples (Schwarze Kreise)
+            if len(selected_X) > n_init:
+                ax2.scatter(
+                    selected_X[n_init:, 0], 
+                    selected_X[n_init:, 1], 
+                    pt_diff[n_init:], 
+                    color='black', 
+                    marker='o', 
+                    s=30, 
+                    label="Aktive Samples"
+                )
+            ax2.legend()
+            
+            # --- Panel 3: Unsicherheit ---
+            # Hier zeichnen wir die Punkte am Boden (Höhe 0) ein, um die Verteilung zu sehen
+            ax3.scatter(
+                selected_X[:n_init, 0], 
+                selected_X[:n_init, 1], 
+                np.zeros(n_init), 
+                color='blue', 
+                marker='D', 
+                s=40
+            )
+            if len(selected_X) > n_init:
+                ax3.scatter(
+                    selected_X[n_init:, 0], 
+                    selected_X[n_init:, 1], 
+                    np.zeros(len(selected_X) - n_init), 
+                    color='black', 
+                    marker='o', 
+                    s=30
+                )
+            
+        plt.tight_layout()
+        plt.show()
+
+    def plot_comparison_landscape(self, selector, resolution=50):
+        """Erstellt einen 3-Panel-Vergleich: Illusion, Realität und NN-Korrektur."""
+        print("\n[Visualisierung] Generiere Vergleichs-Landschaft (3 Panels)...")
+        
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution) # Korrigiert auf bounds[1]
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+        
+        # 1. Realität (Ground Truth)
+        y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
+        Z_real = y_true.reshape(X.shape)
+        
+        # 2. Illusion (Simulation)
+        # Exakt so berechnen, wie es dein NN-Selektor in _get_diff_data tut!
+        y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
+        Z_illusion = y_illus.reshape(X.shape)
+        
+        # 3. Korrektur (Illusion + NN Vorhersage)
+        Z_nn_pred = selector.nn_model.predict(grid_points).reshape(X.shape)
+        Z_corrected = Z_illusion + Z_nn_pred
+        
+        # =====================================================================
+        # DER TRICK: GEMEINSAME SKALIERUNG FÜR ALLE PLOTS
+        # =====================================================================
+        # Wir suchen den absolut niedrigsten und höchsten Wert aller drei Welten
+        z_min = min(Z_real.min(), Z_illusion.min(), Z_corrected.min())
+        z_max = max(Z_real.max(), Z_illusion.max(), Z_corrected.max())
+        
+        # Plotting
+        import matplotlib.pyplot as plt
+        fig = plt.figure(figsize=(20, 6))
+        fig.suptitle("Performance-Vergleich: Simulation vs. Realität vs. NN-Korrektur", fontsize=16, fontweight='bold')
+        
+        # Panel 1: Illusion
+        ax1 = fig.add_subplot(131, projection='3d')
+        # vmin und vmax zwingen die Farbe in unser Skalierungs-Korsett
+        surf1 = ax1.plot_surface(X, Y, Z_illusion, cmap='Blues', alpha=0.8, edgecolor='none', vmin=z_min, vmax=z_max)
+        ax1.set_title("1. Illusion (Unkorrigiert)")
+        ax1.set_zlim(z_min, z_max) # Zwingt die Z-Achse, gleich hoch zu sein
+        fig.colorbar(surf1, ax=ax1, shrink=0.5, pad=0.1)
+        
+        # Panel 2: Realität
+        ax2 = fig.add_subplot(132, projection='3d')
+        surf2 = ax2.plot_surface(X, Y, Z_real, cmap='Reds', alpha=0.8, edgecolor='none', vmin=z_min, vmax=z_max)
+        ax2.set_title("2. Realität (Ground Truth)")
+        ax2.set_zlim(z_min, z_max)
+        fig.colorbar(surf2, ax=ax2, shrink=0.5, pad=0.1)
+        
+        # Panel 3: Korrektur
+        ax3 = fig.add_subplot(133, projection='3d')
+        surf3 = ax3.plot_surface(X, Y, Z_corrected, cmap='Greens', alpha=0.8, edgecolor='none', vmin=z_min, vmax=z_max)
+        ax3.set_title("3. NN-Korrektur (Illusion + NN)")
+        ax3.set_zlim(z_min, z_max)
+        fig.colorbar(surf3, ax=ax3, shrink=0.5, pad=0.1)
+        
+        plt.tight_layout()
+        plt.show()
+
+    def plot_dinn_uncertainty_evolution(self, selector, resolution=40):
+        """
+        Plottet die Entwicklung der MAPIE-Unsicherheitskarte über alle Iterationen.
+        Erstellt dynamisch ein Grid von 3D-Subplots.
+        """
+        import math
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from sklearn.base import clone
+        from mapie.regression import CrossConformalRegressor
+        from sklearn.model_selection import LeaveOneOut
+
+        print("\n[Visualisierung] Generiere Evolution der Unsicherheit...")
+        print("Hinweis: Dies kann je nach Anzahl der Iterationen einen Moment dauern, da MAPIE nachgebaut wird.")
+
+        history = selector.sample_history
+        n_iters = len(history)
+
+        if n_iters == 0:
+            print("Keine Historie gefunden!")
+            return
+
+        # --- 1. Layout berechnen ---
+        # Maximal 5 Spalten, Reihen werden automatisch aufgefüllt
+        cols = min(5, n_iters)
+        rows = math.ceil(n_iters / cols)
+
+        fig = plt.figure(figsize=(4 * cols, 4 * rows))
+        fig.suptitle("Evolution der MAPIE-Unsicherheit (Active Learning)", fontsize=16, fontweight='bold')
+
+        # --- 2. Grid vorbereiten ---
+        # Resolution etwas runtergesetzt (40), damit es bei vielen Iterationen schneller rechnet
+        bounds = self.space.dimensions
+        x = np.linspace(bounds[0][0], bounds[0][1], resolution)
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
+        X, Y = np.meshgrid(x, y)
+        grid_points = np.c_[X.ravel(), Y.ravel()]
+
+        # Wir klonen das initiale Modell, um saubere Trainingsdurchläufe zu garantieren
+        base_model = clone(selector.nn_model)
+
+        # --- 3. Schleife über alle Iterationen ---
+        for i, current_X in enumerate(history):
+            print(f" -> Berechne Landschaft für Iteration {i+1}/{n_iters} (Samples: {len(current_X)})...")
+            
+            # Ground Truth und Diff für den aktuellen Stand berechnen
+            y_true_train = np.array(self.space.get_values_for_points(current_X, save_points=False))
+            y_illus_train = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true_train, current_X)])
+            current_diffs = y_true_train - y_illus_train
+
+            # Modell und MAPIE exakt wie in der Schleife trainieren
+            base_model.fit(current_X, current_diffs)
+            mapie = CrossConformalRegressor(
+                estimator=base_model, 
+                cv=LeaveOneOut(), 
+                method='plus', 
+                random_state=42
+            )
+            mapie.fit_conformalize(current_X, current_diffs)
+
+            # Unsicherheit für das gesamte Grid vorhersagen
+            try:
+                _, pis = mapie.predict_interval(grid_points)
+            except TypeError:
+                _, pis = mapie.predict_interval(grid_points, alpha=0.1)
+
+            lower_bound = pis[:, 0, 0]
+            upper_bound = pis[:, 1, 0]
+            Z_uncert = (upper_bound - lower_bound).reshape(X.shape)
+
+            # --- 4. Subplot zeichnen ---
+            ax = fig.add_subplot(rows, cols, i+1, projection='3d')
+            surf = ax.plot_surface(X, Y, Z_uncert, cmap='YlGnBu', alpha=0.9, edgecolor='none')
+            
+            ax.set_title(f"Iter {i+1} (N={len(current_X)})", fontsize=10)
+            # Achsen-Labels ausblenden, damit das Grid nicht zu unordentlich wird
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_zticklabels([])
+
+            # Die Samples, die bis zu dieser Iteration bekannt waren, auf den Boden (0) malen
+            ax.scatter(current_X[:, 0], current_X[:, 1], np.zeros(len(current_X)), color='black', marker='o', s=10)
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.9) # Platz für den Suptitle lassen
         plt.show()

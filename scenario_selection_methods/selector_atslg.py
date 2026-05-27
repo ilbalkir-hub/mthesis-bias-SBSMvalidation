@@ -14,7 +14,7 @@ class ATSLGSelector(BaseSelector):
     Performance-Dissimilarity (Bias) gezielt zu kompensieren.
     """
 
-    def __init__(self, space, n_select: int, n_initial: int = 10, n_iterations: int = 10):
+    def __init__(self, space, n_select: int, n_initial: int = 10, n_iterations: int = 5):
         
         super().__init__(space, n_select)
         self.n_initial = n_initial
@@ -27,6 +27,9 @@ class ATSLGSelector(BaseSelector):
         self.gpc = GaussianProcessClassifier(kernel=self.kernel)
         self.gpr1 = GaussianProcessRegressor(kernel=self.kernel, alpha=1e-5) # Für Suboptimale Regionen
         self.gpr2 = GaussianProcessRegressor(kernel=self.kernel, alpha=1e-5) # Für Optimale Regionen
+
+        self.af_history = []
+        self.sample_history = []
 
     def _get_diff_data(self, X):
         """Berechnet f(x) = Ground Truth - Illusion (Gleichung 12)."""
@@ -110,6 +113,11 @@ class ATSLGSelector(BaseSelector):
             scores = w * (EI / U_E) + (1 - w) * (class_var / U_C) #her 
             var1 = (EI / U_E)
             var2 = (EI / U_E)
+
+            # Historie Speichern für Plots
+            self.af_history.append(scores.copy())
+            self.sample_history.append(current_X.copy())
+
             # Wähle die Top-Kandidaten aus
             best_indices = np.argsort(scores)[-self.n_per_iter:]
             next_X = X_cand[best_indices]
