@@ -37,10 +37,16 @@ def evaluate_single_config(space, method_name, n_select, eval_metrics):
     
     if hasattr(selector, "select"):
         selector.select()
-        metrics_real = space.metrics.run_metrics_suite(method_categories=safe_metrics)
+        # Bei ATSLG (selector.select) musst du prüfen, ob es eine get_model Methode gibt, 
+        # um den RMSE zu berechnen. Falls nicht, übergebe einfach das ATSLG Objekt selbst 
+        # (da du ATSLG nicht als klassisches sklearn-Modell gebaut hast, musst du hier aufpassen, 
+        # wie prediction_bias und model_rmse darauf zugreifen!).
+        # Für den Anfang übergeben wir einfach den selector als Modell:
+        metrics_real = space.metrics.run_metrics_suite(metric_names=safe_metrics, surrogate_model=selector)
+        
     elif hasattr(selector, "get_model"):
         model = selector.get_model()
-        metrics_real = space.metrics.run_metrics_suite(method_categories=safe_metrics, surrogate_model=model)
+        metrics_real = space.metrics.run_metrics_suite(metric_names=safe_metrics, surrogate_model=model)
     else:
         raise NotImplementedError("Selektor muss 'select()' oder 'get_model()' haben.")
     
@@ -63,7 +69,7 @@ def main():
     print("="*50)
 
     # Testraum
-    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "without_noise" / "test_4.json"
+    test_file_path = base_path.parent / "criticality_spaces" / "Spaces" / "test_cases" / "2D" / "without_noise" / "test_6.json"
     print(f"[1] Lade Raum: {test_file_path.name}")
     
     functions = load_functions_from_json(test_file_path)
@@ -71,30 +77,57 @@ def main():
 
     # 2. BIAS AKTIVIEREN
     print("[2] Biases aktivieren...")
-    bias3 = FlatRegionBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), offset=0.1)
+    bias3 = FlatRegionBias(x_range=(4.0, 9.0), y_range=(4.0, 9.0), offset=2)
     #bias3 = AxisGradientBias(axis_index=1, start_coord=5, drop_per_unit= 0.075)
     ultimate_pipeline = BiasChain([bias3])
     space.activate_bias(ultimate_pipeline)
 
     # 3. SELEKTOR STARTEN
     method = "dinn"
-    n_select = 15
-    metrics_to_calc = ["general", "extremum_search"]
+    n_select = 25
+    metrics_to_calc = [
+        "model_rmse", 
+        "prediction_bias", 
+        "sample_variance", 
+        "sampling_efficiency",
+        "convergence_rate",
+        "max_criticality",               
+        "max_criticality_selected",     
+        "average_criticality_selected"   
+    ]
     
     space.reset_selected_points()
     metrics_real, metrics_illu, duration, active_selector = evaluate_single_config(space, method, n_select, metrics_to_calc)
 
-    # 4. EXCEL EXPORT
+    # 4. EXCEL EXPORT (UMGEBAUT FÜR EINE EINZELNE ZEILE)
     print("\n[4] Speichere Ergebnisse in Excel...")
-    base_info = {
+    
+    # Illusion und Realität sicher abrufen
+    illu_max = metrics_illu.get('max_criticality_selected', 0)
+    real_max = metrics_real.get('max_criticality_selected', 0)
+    gap = illu_max - real_max
+
+    row_combined = {
         "Testdatei": test_file_path.name,
         "Methode": method,
         "Budget (n_select)": n_select,
-        "Dauer (Sekunden)": round(duration, 2)
+        "Dauer (Sekunden)": round(duration, 2),
+        
+        # Globale Modell-Metriken
+        "RMSE (Modellgüte)": metrics_real.get("model_rmse"),
+        "Bias (Vorhersage)": metrics_real.get("prediction_bias"),
+        "Sampling Effizienz": metrics_real.get("sampling_efficiency"),
+        "Sample Varianz": metrics_real.get("sample_variance"),
+        "Konvergenzrate": metrics_real.get("convergence_rate"),
+        
+        # Globale Raum-Werte
+        "Global Max (Ground Truth)": metrics_real.get("max_criticality"),
+        
+        # Gefundene Punkte (Der Vergleich)
+        "Gefundenes Max (Illusion)": illu_max,
+        "Gefundenes Max (Realität)": real_max,
+        "Sim-to-Real GAP": gap
     }
-
-    row_real = {**base_info, "Welt": "Realität (Ground Truth)", **metrics_real}
-    row_illusion = {**base_info, "Welt": "Illusion (Sensordaten)", **metrics_illu}
 
     output_dir = base_path / "evaluations"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,16 +135,13 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"dev_ergebnisse_{method}_{timestamp}.xlsx"
 
-    df = pd.DataFrame([row_illusion, row_real])
+    df = pd.DataFrame([row_combined])
     df.to_excel(output_file, index=False, sheet_name="Metriken")
 
     # 5. ERGEBNISSE AUSGEBEN
     print("\n" + "-"*50)
     print(f"📊 ERGEBNISSE ({method}) - Dauer: {duration:.2f}s")
     print("-" * 50)
-    print(f"Maximal gefundene Gefahr (Illusion): {metrics_illu.get('max_criticality_selected', 0):.4f}")
-    print(f"Maximal gefundene Gefahr (Realität): {metrics_real.get('max_criticality_selected', 0):.4f}")
-    print(f"Sim-to-Reality GAP: {metrics_illu.get('max_criticality_selected', 0) - metrics_real.get('max_criticality_selected', 0):+.4f}")
 
     # 6. VISUALISIERUNG
     print("\n[6] Öffne 3D-Plots...")
@@ -120,13 +150,14 @@ def main():
     
     if method == "atslg":
         space.visualizer.plot_atslg_landscape(active_selector)
+        space.visualizer.plot_comparison_landscape(active_selector)
     elif method == "atslgnc":
         space.visualizer.plot_standard_gpr_landscape(active_selector)
         space.visualizer.plot_comparison_landscape(active_selector)
     elif method == "dinn":
         space.visualizer.plot_dinn_landscape(active_selector)
         space.visualizer.plot_comparison_landscape(active_selector)
-        space.visualizer.plot_dinn_uncertainty_evolution(active_selector)
+        #space.visualizer.plot_dinn_uncertainty_evolution(active_selector)
 
     print("Skript ist fertig. Plot sollte offen sein.")
 

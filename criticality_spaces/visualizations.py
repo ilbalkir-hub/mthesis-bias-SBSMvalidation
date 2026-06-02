@@ -760,8 +760,14 @@ class SpaceVisualizer:
         plt.show()
 
     def plot_dinn_landscape(self, selector, resolution=50):
-        """Zeigt Realität, NN-Vorhersage und die MAPIE-Unsicherheitskarte in 3 Panels."""
-        print("\n[Visualisierung] Generiere DINN-Fehler-Landschaft inkl. Unsicherheit (3 Panels)...")
+        """Zeigt Realität, NN-Vorhersage und die MAPIE-Unsicherheitskarte interaktiv via Plotly."""
+        import numpy as np
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import os
+        import webbrowser
+        
+        print("\n[Visualisierung] Generiere interaktive DINN-Landschaft (3 Panels im Browser)...")
         
         bounds = self.space.dimensions
         x = np.linspace(bounds[0][0], bounds[0][1], resolution)
@@ -769,25 +775,21 @@ class SpaceVisualizer:
         X, Y = np.meshgrid(x, y)
         grid_points = np.c_[X.ravel(), Y.ravel()]
         
-        # 1. Echte Realität
+        # --- 1. Echte Realität berechnen ---
         y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
         y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
         Z_true = (y_true - y_illus).reshape(X.shape)
         
-        # 2. Modell & Unsicherheit (MAPIE) neu berechnen auf dem finalen Stand
+        # --- 2. Modell & Unsicherheit (MAPIE) berechnen ---
         if hasattr(selector, "nn_model") and len(selector.sample_history) > 0:
             from mapie.regression import CrossConformalRegressor
             from sklearn.model_selection import LeaveOneOut
             
-            # Letzter Stand der Trainingsdaten
             current_X = selector.sample_history[-1]
-            
-            # Ground Truth der bekannten Punkte für MAPIE berechnen
             y_true_train = np.array(self.space.get_values_for_points(current_X, save_points=False))
             y_illus_train = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true_train, current_X)])
             current_diffs = y_true_train - y_illus_train
             
-            # MAPIE ein letztes Mal auf alle Daten anwenden, um die Map zu malen
             mapie = CrossConformalRegressor(
                 estimator=selector.nn_model, 
                 cv=LeaveOneOut(), 
@@ -803,118 +805,136 @@ class SpaceVisualizer:
                 
             Z_pred = pred_mean.reshape(X.shape)
             
-            # Unsicherheit ausrechnen
             lower_bound = pis[:, 0, 0]
             upper_bound = pis[:, 1, 0]
             Z_uncert = (upper_bound - lower_bound).reshape(X.shape)
         else:
             Z_pred = np.zeros(X.shape)
             Z_uncert = np.zeros(X.shape)
-        
-        # --- 3 Panels zeichnen ---
-        import matplotlib.pyplot as plt
-        fig = plt.figure(figsize=(18, 6))
-        fig.suptitle("Evaluation: Neuronales Netz mit MAPIE (Jackknife+)", fontsize=14, fontweight='bold')
-        
-        # Panel 1: Realität
-        ax1 = fig.add_subplot(131, projection='3d')
-        surf1 = ax1.plot_surface(X, Y, Z_true, cmap='Reds', alpha=0.8, edgecolor='none')
-        ax1.set_title("Echte Realität (Bias)")
-        fig.colorbar(surf1, ax=ax1, shrink=0.5, pad=0.1)
-        
-        # Panel 2: Vorhersage
-        ax2 = fig.add_subplot(132, projection='3d')
-        surf2 = ax2.plot_surface(X, Y, Z_pred, cmap='Purples', alpha=0.8, edgecolor='none')
-        ax2.set_title("Gelerntes NN (Vorhersage)")
-        fig.colorbar(surf2, ax=ax2, shrink=0.5, pad=0.1)
+            
+        # --- 3. Plotly Interaktive Figure erstellen ---
+        fig = make_subplots(
+            rows=1, cols=3,
+            specs=[[{'is_3d': True}, {'is_3d': True}, {'is_3d': True}]],
+            subplot_titles=("1. Echte Realität (Bias)", "2. Gelerntes NN (Vorhersage)", "3. Unsicherheitskarte (MAPIE)"),
+            horizontal_spacing=0.05
+        )
 
-        # Panel 3: Unsicherheit
-        ax3 = fig.add_subplot(133, projection='3d')
-        surf3 = ax3.plot_surface(X, Y, Z_uncert, cmap='YlGnBu', alpha=0.8, edgecolor='none')
-        ax3.set_title("Unsicherheitskarte (Intervallbreite)")
-        fig.colorbar(surf3, ax=ax3, shrink=0.5, pad=0.1)
+        # Flächen hinzufügen (Surfaces)
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_true, colorscale='Reds', showscale=False), row=1, col=1)
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_pred, colorscale='Purples', showscale=False), row=1, col=2)
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_uncert, colorscale='YlGnBu', showscale=False), row=1, col=3)
 
-        # Gemessene Samples als schwarze Punkte einzeichnen
-        # Gemessene Samples differenziert einzeichnen (Initial vs. Aktiv)
+        # --- 4. Gemessene Samples einzeichnen ---
         if len(self.space.selected_points) > 0:
             selected_X = np.array(self.space.selected_points)
             pt_y_true = np.array(self.space.get_values_for_points(selected_X, save_points=False))
             pt_y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(pt_y_true, selected_X)])
             pt_diff = pt_y_true - pt_y_illus
             
-            # Anzahl der initialen Punkte abrufen (Fallback auf 10)
             n_init = getattr(selector, 'n_initial', 10)
             
-            # --- Panel 2: Vorhersage ---
-            # 1. Initiale Samples (Blaue Diamanten)
-            ax2.scatter(
-                selected_X[:n_init, 0], 
-                selected_X[:n_init, 1], 
-                pt_diff[:n_init], 
-                color='blue', 
-                marker='D', 
-                s=40, 
-                label="Initiale Samples"
-            )
+            # Helper für einheitliche Marker
+            marker_init = dict(size=5, color='blue', symbol='diamond')
+            marker_active = dict(size=4, color='black', symbol='circle')
+
+            # -> Panel 2: Punkte auf der Vorhersage schwebend
+            fig.add_trace(go.Scatter3d(
+                x=selected_X[:n_init, 0], y=selected_X[:n_init, 1], z=pt_diff[:n_init],
+                mode='markers', marker=marker_init, name="Initiale Samples"
+            ), row=1, col=2)
             
-            # 2. Aktive Samples (Schwarze Kreise)
             if len(selected_X) > n_init:
-                ax2.scatter(
-                    selected_X[n_init:, 0], 
-                    selected_X[n_init:, 1], 
-                    pt_diff[n_init:], 
-                    color='black', 
-                    marker='o', 
-                    s=30, 
-                    label="Aktive Samples"
-                )
-            ax2.legend()
+                fig.add_trace(go.Scatter3d(
+                    x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=pt_diff[n_init:],
+                    mode='markers', marker=marker_active, name="Aktive Samples"
+                ), row=1, col=2)
+
+            # -> Panel 3: Punkte flach auf dem Boden der Unsicherheitskarte (z=0)
+            fig.add_trace(go.Scatter3d(
+                x=selected_X[:n_init, 0], y=selected_X[:n_init, 1], z=np.zeros(n_init),
+                mode='markers', marker=marker_init, showlegend=False
+            ), row=1, col=3)
             
-            # --- Panel 3: Unsicherheit ---
-            # Hier zeichnen wir die Punkte am Boden (Höhe 0) ein, um die Verteilung zu sehen
-            ax3.scatter(
-                selected_X[:n_init, 0], 
-                selected_X[:n_init, 1], 
-                np.zeros(n_init), 
-                color='blue', 
-                marker='D', 
-                s=40
-            )
             if len(selected_X) > n_init:
-                ax3.scatter(
-                    selected_X[n_init:, 0], 
-                    selected_X[n_init:, 1], 
-                    np.zeros(len(selected_X) - n_init), 
-                    color='black', 
-                    marker='o', 
-                    s=30
-                )
-            
-        plt.tight_layout()
-        plt.show()
+                fig.add_trace(go.Scatter3d(
+                    x=selected_X[n_init:, 0], y=selected_X[n_init:, 1], z=np.zeros(len(selected_X)-n_init),
+                    mode='markers', marker=marker_active, showlegend=False
+                ), row=1, col=3)
+
+        # --- 5. Layout & Kamera-Sync ---
+        fig.update_layout(
+            title_text="Evaluation: Neuronales Netz mit MAPIE (Interaktiv)",
+            title_x=0.5, height=700, width=1800, margin=dict(l=0, r=0, b=0, t=50),
+            showlegend=True, legend=dict(x=1.0, y=0.9)
+        )
+
+         # Alle drei Kameras synchronisieren, damit sie im gleichen Winkel starten
+        camera = dict(eye=dict(x=1.5, y=1.5, z=0.5))
+        fig.update_layout(scene1_camera=camera, scene2_camera=camera, scene3_camera=camera)
+
+        # Als HTML speichern und öffnen
+        html_file = "dinn_interaktiv.html"
+        fig.write_html(html_file)
+        print(f"[Visualisierung] Fertig! Öffne {html_file} im Browser...")
+        webbrowser.open('file://' + os.path.realpath(html_file))
 
     def plot_comparison_landscape(self, selector, resolution=50):
-        """Erstellt einen 3-Panel-Vergleich: Illusion, Realität und NN-Korrektur."""
-        print("\n[Visualisierung] Generiere Vergleichs-Landschaft (3 Panels)...")
+        """Erstellt einen interaktiven 3-Panel-Vergleich: Illusion, Realität und NN-Korrektur."""
+        import numpy as np
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import os
+        import webbrowser
+        
+        print("\n[Visualisierung] Generiere interaktive Vergleichs-Landschaft (3 Panels)...")
         
         bounds = self.space.dimensions
         x = np.linspace(bounds[0][0], bounds[0][1], resolution)
-        y = np.linspace(bounds[1][0], bounds[1][1], resolution) # Korrigiert auf bounds[1]
+        y = np.linspace(bounds[1][0], bounds[1][1], resolution)
         X, Y = np.meshgrid(x, y)
         grid_points = np.c_[X.ravel(), Y.ravel()]
         
-        # 1. Realität (Ground Truth)
         y_true = np.array(self.space.get_values_for_points(grid_points, save_points=False))
         Z_real = y_true.reshape(X.shape)
         
-        # 2. Illusion (Simulation)
-        # Exakt so berechnen, wie es dein NN-Selektor in _get_diff_data tut!
         y_illus = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true, grid_points)])
         Z_illusion = y_illus.reshape(X.shape)
         
-        # 3. Korrektur (Illusion + NN Vorhersage)
-        Z_nn_pred = selector.nn_model.predict(grid_points).reshape(X.shape)
+        if hasattr(selector, "nn_model"):
+            Z_nn_pred = selector.nn_model.predict(grid_points).reshape(X.shape)
+        else:
+            Z_nn_pred = np.zeros(X.shape)
+            
         Z_corrected = Z_illusion + Z_nn_pred
+        
+        # Globale Skalierung für Z-Achse berechnen
+        z_min = min(Z_real.min(), Z_illusion.min(), Z_corrected.min())
+        z_max = max(Z_real.max(), Z_illusion.max(), Z_corrected.max())
+        
+        fig = make_subplots(
+            rows=1, cols=3,
+            specs=[[{'is_3d': True}, {'is_3d': True}, {'is_3d': True}]],
+            subplot_titles=("1. Illusion (Unkorrigiert)", "2. Realität (Ground Truth)", "3. NN-Korrektur"),
+            horizontal_spacing=0.03
+        )
+
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_illusion, colorscale='Blues', showscale=False, cmin=z_min, cmax=z_max), row=1, col=1)
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_real, colorscale='Reds', showscale=False, cmin=z_min, cmax=z_max), row=1, col=2)
+        fig.add_trace(go.Surface(x=x, y=y, z=Z_corrected, colorscale='Greens', showscale=False, cmin=z_min, cmax=z_max), row=1, col=3)
+
+        # Achsen-Limits erzwingen und Layout bauen
+        scene_config = dict(zaxis=dict(range=[z_min, z_max]), camera=dict(eye=dict(x=1.5, y=1.5, z=0.5)))
+        fig.update_layout(
+            title_text="Performance-Vergleich: Simulation vs. Realität vs. NN-Korrektur",
+            title_x=0.5, height=700, width=1800, margin=dict(l=0, r=0, b=0, t=50),
+            scene1=scene_config, scene2=scene_config, scene3=scene_config
+        )
+
+        html_file = "dinn_comparison_interaktiv.html"
+        fig.write_html(html_file)
+        print(f"[Visualisierung] Fertig! Öffne {html_file} im Browser...")
+        webbrowser.open('file://' + os.path.realpath(html_file))
         
         # =====================================================================
         # DER TRICK: GEMEINSAME SKALIERUNG FÜR ALLE PLOTS
@@ -954,19 +974,19 @@ class SpaceVisualizer:
         plt.show()
 
     def plot_dinn_uncertainty_evolution(self, selector, resolution=40):
-        """
-        Plottet die Entwicklung der MAPIE-Unsicherheitskarte über alle Iterationen.
-        Erstellt dynamisch ein Grid von 3D-Subplots.
-        """
+        """Plottet die Entwicklung der MAPIE-Unsicherheitskarte interaktiv via Plotly."""
         import math
-        import matplotlib.pyplot as plt
         import numpy as np
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
         from sklearn.base import clone
         from mapie.regression import CrossConformalRegressor
         from sklearn.model_selection import LeaveOneOut
+        import os
+        import webbrowser
 
-        print("\n[Visualisierung] Generiere Evolution der Unsicherheit...")
-        print("Hinweis: Dies kann je nach Anzahl der Iterationen einen Moment dauern, da MAPIE nachgebaut wird.")
+        print("\n[Visualisierung] Generiere interaktive Evolution der Unsicherheit (Plotly)...")
+        print("Hinweis: Dies kann einen Moment dauern, da MAPIE für jeden Schritt neu berechnet wird.")
 
         history = selector.sample_history
         n_iters = len(history)
@@ -975,67 +995,85 @@ class SpaceVisualizer:
             print("Keine Historie gefunden!")
             return
 
-        # --- 1. Layout berechnen ---
-        # Maximal 5 Spalten, Reihen werden automatisch aufgefüllt
+        # Layout berechnen
         cols = min(5, n_iters)
         rows = math.ceil(n_iters / cols)
 
-        fig = plt.figure(figsize=(4 * cols, 4 * rows))
-        fig.suptitle("Evolution der MAPIE-Unsicherheit (Active Learning)", fontsize=16, fontweight='bold')
+        # Plotly Subplot Setup mit dynamischen Specs
+        specs = [[{'is_3d': True} for _ in range(cols)] for _ in range(rows)]
+        subplot_titles = [f"Iter {i+1} (N={len(history[i])})" for i in range(n_iters)]
+        
+        # Leere Titel für die leeren Subplots auffüllen
+        subplot_titles.extend([""] * (rows * cols - n_iters))
 
-        # --- 2. Grid vorbereiten ---
-        # Resolution etwas runtergesetzt (40), damit es bei vielen Iterationen schneller rechnet
+        fig = make_subplots(
+            rows=rows, cols=cols,
+            specs=specs,
+            subplot_titles=subplot_titles,
+            horizontal_spacing=0.01, vertical_spacing=0.04
+        )
+
         bounds = self.space.dimensions
         x = np.linspace(bounds[0][0], bounds[0][1], resolution)
         y = np.linspace(bounds[1][0], bounds[1][1], resolution)
         X, Y = np.meshgrid(x, y)
         grid_points = np.c_[X.ravel(), Y.ravel()]
 
-        # Wir klonen das initiale Modell, um saubere Trainingsdurchläufe zu garantieren
         base_model = clone(selector.nn_model)
 
         # --- 3. Schleife über alle Iterationen ---
         for i, current_X in enumerate(history):
-            print(f" -> Berechne Landschaft für Iteration {i+1}/{n_iters} (Samples: {len(current_X)})...")
+            print(f" -> Berechne Landschaft für Iteration {i+1}/{n_iters}...")
             
-            # Ground Truth und Diff für den aktuellen Stand berechnen
             y_true_train = np.array(self.space.get_values_for_points(current_X, save_points=False))
             y_illus_train = np.array([self.space.bias.apply(v, p) for v, p in zip(y_true_train, current_X)])
             current_diffs = y_true_train - y_illus_train
 
-            # Modell und MAPIE exakt wie in der Schleife trainieren
             base_model.fit(current_X, current_diffs)
-            mapie = CrossConformalRegressor(
-                estimator=base_model, 
-                cv=LeaveOneOut(), 
-                method='plus', 
-                random_state=42
-            )
+            mapie = CrossConformalRegressor(estimator=base_model, cv=LeaveOneOut(), method='plus', random_state=42)
             mapie.fit_conformalize(current_X, current_diffs)
 
-            # Unsicherheit für das gesamte Grid vorhersagen
             try:
                 _, pis = mapie.predict_interval(grid_points)
             except TypeError:
                 _, pis = mapie.predict_interval(grid_points, alpha=0.1)
 
-            lower_bound = pis[:, 0, 0]
-            upper_bound = pis[:, 1, 0]
-            Z_uncert = (upper_bound - lower_bound).reshape(X.shape)
+            Z_uncert = (pis[:, 1, 0] - pis[:, 0, 0]).reshape(X.shape)
 
-            # --- 4. Subplot zeichnen ---
-            ax = fig.add_subplot(rows, cols, i+1, projection='3d')
-            surf = ax.plot_surface(X, Y, Z_uncert, cmap='YlGnBu', alpha=0.9, edgecolor='none')
-            
-            ax.set_title(f"Iter {i+1} (N={len(current_X)})", fontsize=10)
-            # Achsen-Labels ausblenden, damit das Grid nicht zu unordentlich wird
-            ax.set_xticklabels([])
-            ax.set_yticklabels([])
-            ax.set_zticklabels([])
+            r = (i // cols) + 1
+            c = (i % cols) + 1
 
-            # Die Samples, die bis zu dieser Iteration bekannt waren, auf den Boden (0) malen
-            ax.scatter(current_X[:, 0], current_X[:, 1], np.zeros(len(current_X)), color='black', marker='o', s=10)
+            # Fläche malen
+            fig.add_trace(go.Surface(
+                x=x, y=y, z=Z_uncert, colorscale='YlGnBu', showscale=False
+            ), row=r, col=c)
 
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.9) # Platz für den Suptitle lassen
-        plt.show()
+            # Punkte am Boden malen
+            fig.add_trace(go.Scatter3d(
+                x=current_X[:, 0], y=current_X[:, 1], z=np.zeros(len(current_X)),
+                mode='markers', marker=dict(size=3, color='black', symbol='circle'), showlegend=False
+            ), row=r, col=c)
+
+            # Cleanes Aussehen: Achsenbeschriftungen verbergen, da es sonst unleserlich wird
+            fig.update_layout(**{
+                f'scene{i+1}': dict(
+                    xaxis=dict(showticklabels=False, title=''),
+                    yaxis=dict(showticklabels=False, title=''),
+                    zaxis=dict(showticklabels=False, title='')
+                )
+            })
+
+        fig.update_layout(
+            title_text="Evolution der MAPIE-Unsicherheit (Interaktiv)",
+            title_x=0.5, height=350 * rows, width=400 * cols, margin=dict(l=10, r=10, b=10, t=50)
+        )
+
+        # Kamera Sync für alle Panels gleichzeitig!
+        camera = dict(eye=dict(x=1.5, y=1.5, z=0.5))
+        camera_sync = {f'scene{i+1}_camera': camera for i in range(rows*cols)}
+        fig.update_layout(**camera_sync)
+
+        html_file = "dinn_evolution_interaktiv.html"
+        fig.write_html(html_file)
+        print(f"[Visualisierung] Fertig! Öffne {html_file} im Browser...")
+        webbrowser.open('file://' + os.path.realpath(html_file))

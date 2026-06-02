@@ -132,6 +132,37 @@ class ATSLGSelector(BaseSelector):
             
         return [tuple(p) for p in current_X]
     
+    def predict(self, X):
+        """
+        Hilfsfunktion für die Evaluierungs-Metriken (RMSE, Bias).
+        Berechnet den kombinierten Erwartungswert für die Koordinaten X.
+        """
+        # 1. Wahrscheinlichkeiten vom Klassifikator holen
+        try:
+            p1 = self.gpc.predict_proba(X)[:, 1]
+        except:
+            # Fallback, falls der Klassifikator noch nicht richtig trainiert ist
+            p1 = np.zeros(len(X))
+            if len(self.sample_history) > 0:
+                _, labels, _ = self._get_diff_data(self.sample_history[-1])
+                if len(labels) > 0 and labels[0] == 1:
+                    p1 = np.ones(len(X))
+                    
+        p2 = 1.0 - p1
+        
+        # 2. Werte der beiden GPRs holen
+        if hasattr(self, "gpr1") and hasattr(self.gpr1, "X_train_"):
+            mean1 = self.gpr1.predict(X)
+        else:
+            mean1 = np.zeros(len(X))
+            
+        if hasattr(self, "gpr2") and hasattr(self.gpr2, "X_train_"):
+            mean2 = self.gpr2.predict(X)
+        else:
+            mean2 = np.zeros(len(X))
+            
+        # 3. Verschmelzen (genau wie in deiner Visualisierung!)
+        return (p1 * mean1) + (p2 * mean2)
     
 class StandardGPRSelector(BaseSelector):
     """
